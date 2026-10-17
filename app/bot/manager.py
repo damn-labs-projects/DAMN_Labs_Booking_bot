@@ -42,6 +42,10 @@ class BotManager:
             logger.error(f"Failed to register parent bot webhook: {e}")
 
     async def init_active_tenants(self):
+        if db.db is None:
+            logger.warning("MongoDB is unavailable; skipping active tenant webhook registration.")
+            return
+
         cursor = db.db.tenants.find({"bot_config.is_active": True})
         async for tenant in cursor:
             token = tenant.get("bot_config", {}).get("token")

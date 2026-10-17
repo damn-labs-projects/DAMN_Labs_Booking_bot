@@ -16,6 +16,9 @@ async def telegram_webhook(bot_token: str, request: Request):
 
 @router.post("/paddle")
 async def paddle_webhook(request: Request):
+    if db.db is None:
+        return {"status": "db_unavailable"}
+
     payload = await request.json()
     event_type = payload.get("event_type")
     data = payload.get("data", {})
