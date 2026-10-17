@@ -1,6 +1,9 @@
-from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
+import asyncio
 import logging
+
+from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramRetryAfter
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config import settings
 from app.db.mongodb import db
@@ -25,10 +28,16 @@ class BotManager:
     async def register_tenant_webhook(self, token: str):
         bot = self.get_bot_by_token(token)
         webhook_url = f"{settings.BASE_WEBHOOK_URL}/api/v1/webhooks/telegram/{token}"
-        current_webhook = await bot.get_webhook_info()
-        if current_webhook.url != webhook_url:
+        try:
+            current_webhook = await bot.get_webhook_info()
+            if current_webhook.url != webhook_url:
+                await bot.set_webhook(url=webhook_url)
+                logger.info(f"Webhook set for bot token: ...{token[-6:]}")
+        except TelegramRetryAfter as exc:
+            logger.warning("Telegram flood control: waiting %s seconds before retrying webhook for %s", exc.retry_after, token)
+            await asyncio.sleep(max(exc.retry_after, 2))
             await bot.set_webhook(url=webhook_url)
-            logger.info(f"Webhook set for bot token: ...{token[-6:]}")
+            logger.info(f"Webhook retried for bot token: ...{token[-6:]}")
 
     async def init_parent_bot(self):
         if not settings.PARENT_BOT_TOKEN:

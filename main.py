@@ -21,6 +21,14 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+@app.get("/")
+async def root():
+    return {
+        "status": "ok",
+        "service": settings.PROJECT_NAME,
+        "message": "DAMN Booking Bot is running"
+    }
+
 app.include_router(tenants_router, prefix="/api/v1/tenants", tags=["Tenants"])
 app.include_router(webhooks_router, prefix="/api/v1/webhooks", tags=["Webhooks"])
 
