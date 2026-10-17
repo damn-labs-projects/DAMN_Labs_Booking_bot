@@ -1,11 +1,13 @@
 from aiogram import Router, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
 
+from app.config import settings
 from app.db.mongodb import db
+from app.bot.handlers.parent import parent_start
 from app.services.booking_service import BookingService
 
 booking_router = Router()
@@ -18,8 +20,16 @@ class BookingSG(StatesGroup):
 
 @booking_router.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
+    if message.bot.token == settings.PARENT_BOT_TOKEN:
+        await parent_start(message)
+        return
+
     await state.clear()
-    
+
+    if db.db is None:
+        await message.answer("База данных недоступна. Попробуйте позже.")
+        return
+
     tenant = await db.db.tenants.find_one({"bot_config.token": message.bot.token})
     if not tenant:
         await message.answer("Ошибка: Заведение не найдено.")
@@ -50,6 +60,18 @@ async def cmd_start(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
     await state.set_state(BookingSG.selecting_service)
+
+
+@booking_router.message(Command(commands=["help", "menu", "startup"]))
+async def cmd_help(message: types.Message):
+    if message.bot.token == settings.PARENT_BOT_TOKEN:
+        await parent_start(message)
+        return
+
+    await message.answer(
+        "📌 Доступные команды:\n/start — начать запись\n/help — помощь",
+        parse_mode="Markdown"
+    )
 
 
 @booking_router.callback_query(BookingSG.selecting_service, F.data.startswith("srv:"))

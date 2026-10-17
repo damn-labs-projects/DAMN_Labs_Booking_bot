@@ -1,11 +1,14 @@
 import unittest
+from types import SimpleNamespace
 
+from app.bot.handlers.booking import cmd_start
 from app.bot.handlers.parent import (
     build_parent_billing_summary,
     build_parent_demo_message,
     build_parent_tenant_summary,
     build_parent_tenants_list,
 )
+from app.config import settings
 
 
 class ParentBotTests(unittest.TestCase):
@@ -45,6 +48,31 @@ class ParentBotTests(unittest.TestCase):
         self.assertIn("Beauty Studio", list_text)
         self.assertIn("trial", billing_text.lower())
         self.assertIn("7 дней trial", billing_text)
+
+    def test_parent_bot_start_command_does_not_hit_tenant_not_found(self):
+        old_token = settings.PARENT_BOT_TOKEN
+        settings.PARENT_BOT_TOKEN = "parent-token"
+
+        class FakeState:
+            async def clear(self):
+                pass
+
+        class FakeMessage:
+            def __init__(self):
+                self.bot = SimpleNamespace(token="parent-token")
+                self._answers = []
+
+            async def answer(self, text, **kwargs):
+                self._answers.append(text)
+
+        try:
+            message = FakeMessage()
+            import asyncio
+            asyncio.run(cmd_start(message, FakeState()))
+            self.assertTrue(message._answers)
+            self.assertNotIn("Ошибка: Заведение не найдено.", message._answers[0])
+        finally:
+            settings.PARENT_BOT_TOKEN = old_token
 
 
 if __name__ == "__main__":
