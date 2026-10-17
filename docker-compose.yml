@@ -1,0 +1,25 @@
+services:
+  web:
+    build: .
+    container_name: damn_booking_web
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MONGODB_URL=mongodb://mongo:27017
+    depends_on:
+      - mongo
+    restart: always
+
+  mongo:
+    image: mongo:4.4
+    container_name: damn_booking_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: always
+
+volumes:
+  mongo_data:
