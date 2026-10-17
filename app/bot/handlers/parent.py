@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 try:
     from aiogram import F, Router, types
     from aiogram.exceptions import TelegramBadRequest
-    from aiogram.filters import CommandStart
+    from aiogram.filters import Command, CommandStart
     from aiogram.fsm.context import FSMContext
     from aiogram.fsm.state import State, StatesGroup
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -80,6 +80,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for lightweight test 
             pass
 
     F = type("F", (), {"data": None})
+    Command = lambda *args, **kwargs: None
     CommandStart = lambda *args, **kwargs: None
 
 try:
@@ -167,6 +168,29 @@ class ParentTenantWizard(StatesGroup):
     waiting_confirmation = State()
 
 
+class ParentDemo(StatesGroup):
+    selecting_service = State()
+    selecting_date = State()
+    selecting_slot = State()
+
+
+DEMO_SERVICES = [
+    {"id": "s1", "name": "Стрижка", "price": 1500, "currency": "KGS", "duration": 60},
+    {"id": "s2", "name": "Маникюр", "price": 1200, "currency": "KGS", "duration": 90},
+    {"id": "s3", "name": "Массаж", "price": 2500, "currency": "KGS", "duration": 60},
+]
+
+DEMO_SLOTS = ["10:00", "11:30", "13:00", "15:30", "17:00", "18:30"]
+
+CATEGORIES = [
+    ("beauty", "💇 Beauty / красота"),
+    ("medical", "🏥 Medical / медицина"),
+    ("education", "🎓 Education / обучение"),
+    ("auto", "🚗 Auto / авто"),
+    ("other", "🏢 Другое"),
+]
+
+
 def build_parent_demo_message(tenant_name: str = "Demo Salon") -> str:
     return (
         "🧩 Демо-режим родительского бота D.A.M.N Labs\n\n"
@@ -247,6 +271,83 @@ def build_parent_menu() -> InlineKeyboardMarkup:
     )
 
 
+def build_category_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="💇 Beauty / красота", callback_data="wiz:cat:beauty"),
+         InlineKeyboardButton(text="🏥 Medical / медицина", callback_data="wiz:cat:medical")],
+        [InlineKeyboardButton(text="🎓 Education / обучение", callback_data="wiz:cat:education"),
+         InlineKeyboardButton(text="🚗 Auto / авто", callback_data="wiz:cat:auto")],
+        [InlineKeyboardButton(text="🏢 Другое", callback_data="wiz:cat:other")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="wiz:back"),
+         InlineKeyboardButton(text="❌ Отмена", callback_data="wiz:cancel")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_wizard_keyboard(back: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    if back:
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="wiz:back")])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="wiz:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+WIZARD_PROMPTS = [
+    (ParentTenantWizard.waiting_name, "📝 Шаг 1/5. Введите название бизнеса:"),
+    (ParentTenantWizard.waiting_category, "🏷 Шаг 2/5. Выберите категорию бизнеса:"),
+    (ParentTenantWizard.waiting_owner_name, "👤 Шаг 3/5. Введите имя владельца:"),
+    (ParentTenantWizard.waiting_owner_phone, "📞 Шаг 4/5. Введите телефон владельца:"),
+    (ParentTenantWizard.waiting_bot_token, "🔑 Шаг 5/5. Введите токен Telegram-бота от @BotFather:"),
+]
+
+
+def build_demo_intro() -> str:
+    return (
+        "🧪 Демо-режим\n\n"
+        "Здесь показано, как клиент записывается через дочернего бота вашего бизнеса.\n"
+        "Пройдите шаги до конца — вы увидите тот же путь, что и реальный клиент.\n\n"
+        "Шаг 1 из 3. Выберите услугу:"
+    )
+
+
+def build_demo_dates() -> InlineKeyboardMarkup:
+    today = datetime.now()
+    rows = []
+    for i in range(3):
+        day = today + timedelta(days=i)
+        date_str = day.strftime("%Y-%m-%d")
+        label = "Сегодня" if i == 0 else ("Завтра" if i == 1 else day.strftime("%d.%m"))
+        rows.append([InlineKeyboardButton(
+            text=f"📅 {label} ({date_str})",
+            callback_data=f"demo:date:{date_str}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="demo:back:services")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_demo_slots(date_str: str) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for slot in DEMO_SLOTS:
+        row.append(InlineKeyboardButton(text=slot, callback_data=f"demo:time:{slot}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="demo:back:dates")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_demo_confirm(date_str: str, slot: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Пройти заново", callback_data="parent:demo")],
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="demo:menu")],
+        ]
+    )
+
+
 @parent_router.message(CommandStart())
 async def parent_start(message: types.Message, state: FSMContext = None):
     user_id = getattr(getattr(message, "from_user", None), "id", None)
@@ -260,25 +361,70 @@ async def parent_start(message: types.Message, state: FSMContext = None):
 
     if state is not None:
         await state.set_state(AdminLoginSG.waiting_password)
-    await message.answer("🔒 Это панель администратора D.A.M.N Booking Hub.\nВведите пароль администратора:")
+    await message.answer(
+        "🔒 Это панель администратора D.A.M.N Booking Hub.\n\n"
+        "Введите пароль администратора сообщением или командой /login <пароль>.\n"
+        "Отмена — /cancel."
+    )
+
+
+@parent_router.message(Command(commands=["login", "admin", "admin_booking_bot"]))
+async def parent_login_command(message: types.Message, state: FSMContext):
+    import hmac
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) == 2 and parts[1].strip():
+        await _try_login(message, state, parts[1].strip())
+        return
+
+    user_id = getattr(getattr(message, "from_user", None), "id", None)
+    if await is_admin(user_id):
+        await state.clear()
+        await message.answer(build_parent_demo_message("Demo Salon"), reply_markup=build_parent_menu())
+        return
+
+    await state.set_state(AdminLoginSG.waiting_password)
+    await message.answer("🔒 Введите пароль администратора (отмена — /cancel):")
+
+
+@parent_router.message(Command("cancel"))
+async def parent_cancel(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = getattr(getattr(message, "from_user", None), "id", None)
+    if await is_admin(user_id):
+        await message.answer("🏠 Главное меню:", reply_markup=build_parent_menu())
+    else:
+        await message.answer("Отменено. Для входа отправьте /login.")
+
+
+async def _try_login(message: types.Message, state: FSMContext, password: str) -> bool:
+    import hmac
+
+    expected = getattr(settings, "ADMIN_PASSWORD", "") or ""
+    if not expected:
+        await message.answer(
+            "⚠️ Пароль администратора не настроен (ADMIN_PASSWORD). "
+            "Задайте его в переменных окружения и попробуйте снова."
+        )
+        return False
+    if hmac.compare_digest(password.encode(), expected.encode()):
+        await mark_admin(getattr(message.from_user, "id", None))
+        await state.clear()
+        await message.answer(build_parent_demo_message("Demo Salon"), reply_markup=build_parent_menu())
+        return True
+    await message.answer("❌ Неверный пароль. Попробуйте ещё раз или /cancel.")
+    return False
 
 
 @parent_router.message(AdminLoginSG.waiting_password)
 async def parent_login_password(message: types.Message, state: FSMContext):
-    import hmac
-    import hashlib
-
-    password = (message.text or "").strip()
-    expected = getattr(settings, "ADMIN_PASSWORD", "") or ""
-    if expected and hmac.compare_digest(password.encode(), expected.encode()):
-        await mark_admin(getattr(message.from_user, "id", None))
-        await state.clear()
-        await message.answer(build_parent_demo_message("Demo Salon"), reply_markup=build_parent_menu())
-    else:
-        await message.answer("❌ Неверный пароль. Попробуйте ещё раз:")
+    await _try_login(message, state, (message.text or "").strip())
 
 
-@parent_router.callback_query(F.data.startswith("parent:"))
+@parent_router.callback_query(
+    F.data.startswith("parent:"),
+    ~F.data.in_({"parent:confirm_tenant", "parent:cancel_tenant"}),
+)
 async def parent_action(call: types.CallbackQuery, state: FSMContext):
     action = call.data.split(":", 1)[1]
 
@@ -286,48 +432,133 @@ async def parent_action(call: types.CallbackQuery, state: FSMContext):
         await safe_answer(call, "🔒 Требуется вход в панель администратора.", show_alert=True)
         await state.set_state(AdminLoginSG.waiting_password)
         try:
-            await call.message.answer("🔒 Введите пароль администратора:")
+            await call.message.answer("🔒 Введите пароль администратора (отмена — /cancel):")
         except TelegramBadRequest:
             pass
         return
 
     if action == "tenants":
-        tenants = []
-        if db is not None and db.db is not None:
-            cursor = db.db.tenants.find({}).sort("created_at", -1)
-            tenants = await cursor.to_list(length=20)
+        tenants = await _load_tenants()
         await safe_edit_message(call, build_parent_tenants_list(tenants), build_parent_menu())
         await safe_answer(call)
         return
 
     if action == "billing":
-        tenants = []
-        if db is not None and db.db is not None:
-            cursor = db.db.tenants.find({}).sort("created_at", -1)
-            tenants = await cursor.to_list(length=20)
+        tenants = await _load_tenants()
         await safe_edit_message(call, build_parent_billing_summary(tenants), build_parent_menu())
         await safe_answer(call)
         return
 
     if action == "demo":
-        await safe_edit_message(
-            call,
-            "🧪 Демонстрация: родительский бот управляет платформой D.A.M.N Booking Hub и запускает tenant-боты для бизнеса без разработки и хостинга.",
-            build_parent_menu(),
-        )
+        await state.set_state(ParentDemo.selecting_service)
+        await safe_edit_message(call, build_demo_intro(), build_demo_services_keyboard())
         await safe_answer(call)
         return
 
     if action == "add_tenant":
+        await state.clear()
+        await state.set_state(ParentTenantWizard.waiting_name)
         await safe_edit_message(
             call,
-            "📝 Создание нового тенанта. Введите название бизнеса:",
+            WIZARD_PROMPTS[0][1],
+            build_wizard_keyboard(back=False),
         )
-        await state.set_state(ParentTenantWizard.waiting_name)
         await safe_answer(call)
         return
 
     await safe_edit_message(call, "Команда не найдена.", build_parent_menu())
+    await safe_answer(call)
+
+
+async def _load_tenants() -> list[dict]:
+    if db is None or db.db is None:
+        return []
+    cursor = db.db.tenants.find({}).sort("created_at", -1)
+    return await cursor.to_list(length=20)
+
+
+def build_demo_services_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{service['name']} — {service['price']} {service['currency']} ({service['duration']} мин)",
+            callback_data=f"demo:srv:{service['id']}",
+        )]
+        for service in DEMO_SERVICES
+    ]
+    rows.append([InlineKeyboardButton(text="🏠 В меню", callback_data="demo:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@parent_router.callback_query(ParentDemo.selecting_service, F.data.startswith("demo:srv:"))
+async def parent_demo_service(call: types.CallbackQuery, state: FSMContext):
+    service_id = call.data.split(":")[2]
+    await state.update_data(service_id=service_id)
+    await state.set_state(ParentDemo.selecting_date)
+    service = next((s for s in DEMO_SERVICES if s["id"] == service_id), None)
+    name = service["name"] if service else "услуга"
+    await safe_edit_message(
+        call,
+        f"✅ Услуга: {name}\n\nШаг 2 из 3. Выберите дату:",
+        build_demo_dates(),
+    )
+    await safe_answer(call)
+
+
+@parent_router.callback_query(ParentDemo.selecting_date, F.data.startswith("demo:date:"))
+async def parent_demo_date(call: types.CallbackQuery, state: FSMContext):
+    date_str = call.data.split(":", 2)[2]
+    await state.update_data(selected_date=date_str)
+    await state.set_state(ParentDemo.selecting_slot)
+    await safe_edit_message(
+        call,
+        f"📅 Дата: {date_str}\n\nШаг 3 из 3. Выберите время:",
+        build_demo_slots(date_str),
+    )
+    await safe_answer(call)
+
+
+@parent_router.callback_query(ParentDemo.selecting_slot, F.data.startswith("demo:time:"))
+async def parent_demo_slot(call: types.CallbackQuery, state: FSMContext):
+    slot = call.data.split(":", 2)[2]
+    data = await state.get_data()
+    service_id = data.get("service_id")
+    date_str = data.get("selected_date", "")
+    service = next((s for s in DEMO_SERVICES if s["id"] == service_id), None)
+
+    service_name = service["name"] if service else "Услуга"
+    price = f"{service['price']} {service['currency']}" if service else "—"
+
+    await state.clear()
+    await safe_edit_message(
+        call,
+        "🎉 Демо-запись создана!\n\n"
+        f"📍 Заведение: Demo Salon\n"
+        f"💇 Услуга: {service_name}\n"
+        f"📅 Дата и время: {date_str} {slot}\n"
+        f"💰 Стоимость: {price}\n\n"
+        "Именно так клиент подтверждает запись в дочернем боте: данные сохраняются в базе, "
+        "а владелец получает уведомление в своём Telegram.",
+        build_demo_confirm(date_str, slot),
+    )
+    await safe_answer(call, "Запись оформлена")
+
+
+@parent_router.callback_query(F.data == "demo:menu")
+async def parent_demo_menu(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await safe_edit_message(call, build_parent_demo_message("Demo Salon"), build_parent_menu())
+    await safe_answer(call)
+
+
+@parent_router.callback_query(F.data.startswith("demo:back:"))
+async def parent_demo_back(call: types.CallbackQuery, state: FSMContext):
+    target = call.data.split(":", 2)[2]
+    if target == "services":
+        await state.set_state(ParentDemo.selecting_service)
+        await safe_edit_message(call, build_demo_intro(), build_demo_services_keyboard())
+    elif target == "dates":
+        await state.set_state(ParentDemo.selecting_date)
+        await safe_edit_message(call, "Шаг 2 из 3. Выберите дату:", build_demo_dates())
     await safe_answer(call)
 
 
@@ -336,12 +567,25 @@ async def parent_waiting_name(message: types.Message, state: FSMContext):
     if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
         await state.clear()
         return
-    if not (message.text or "").strip():
-        await message.answer("Название не может быть пустым. Введите название бизнеса:")
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Название не может быть пустым.", reply_markup=build_wizard_keyboard(back=False))
         return
-    await state.update_data(name=message.text.strip())
-    await message.answer("Введите категорию бизнеса (beauty / medical / education / auto):")
+    await state.update_data(name=name)
     await state.set_state(ParentTenantWizard.waiting_category)
+    await message.answer(WIZARD_PROMPTS[1][1], reply_markup=build_category_keyboard())
+
+
+@parent_router.callback_query(F.data.startswith("wiz:cat:"))
+async def parent_wizard_category(call: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(getattr(getattr(call, "from_user", None), "id", None)):
+        await safe_answer(call)
+        return
+    category = call.data.split(":", 2)[2]
+    await state.update_data(category=category)
+    await state.set_state(ParentTenantWizard.waiting_owner_name)
+    await safe_edit_message(call, WIZARD_PROMPTS[2][1], build_wizard_keyboard())
+    await safe_answer(call)
 
 
 @parent_router.message(ParentTenantWizard.waiting_category)
@@ -349,10 +593,13 @@ async def parent_waiting_category(message: types.Message, state: FSMContext):
     if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
         await state.clear()
         return
-    category = message.text.strip().lower()
+    category = (message.text or "").strip().lower()
+    if not category:
+        await message.answer("Выберите категорию кнопкой ниже.", reply_markup=build_category_keyboard())
+        return
     await state.update_data(category=category)
-    await message.answer("Введите имя владельца:")
     await state.set_state(ParentTenantWizard.waiting_owner_name)
+    await message.answer(WIZARD_PROMPTS[2][1], reply_markup=build_wizard_keyboard())
 
 
 @parent_router.message(ParentTenantWizard.waiting_owner_name)
@@ -360,8 +607,12 @@ async def parent_waiting_owner_name(message: types.Message, state: FSMContext):
     if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
         await state.clear()
         return
-    await state.update_data(owner_name=message.text.strip())
-    await message.answer("Введите телефон владельца:")
+    owner_name = (message.text or "").strip()
+    if not owner_name:
+        await message.answer("Имя не может быть пустым.", reply_markup=build_wizard_keyboard())
+        return
+    await state.update_data(owner_name=owner_name)
+    await message.answer(WIZARD_PROMPTS[3][1], reply_markup=build_wizard_keyboard())
     await state.set_state(ParentTenantWizard.waiting_owner_phone)
 
 
@@ -370,8 +621,12 @@ async def parent_waiting_owner_phone(message: types.Message, state: FSMContext):
     if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
         await state.clear()
         return
-    await state.update_data(owner_phone=message.text.strip())
-    await message.answer("Введите токен Telegram-бота от @BotFather:")
+    phone = (message.text or "").strip()
+    if not phone:
+        await message.answer("Телефон не может быть пустым.", reply_markup=build_wizard_keyboard())
+        return
+    await state.update_data(owner_phone=phone)
+    await message.answer(WIZARD_PROMPTS[4][1], reply_markup=build_wizard_keyboard())
     await state.set_state(ParentTenantWizard.waiting_bot_token)
 
 
@@ -380,14 +635,20 @@ async def parent_waiting_bot_token(message: types.Message, state: FSMContext):
     if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
         await state.clear()
         return
-    bot_token = message.text.strip()
+    bot_token = (message.text or "").strip()
     data = await state.get_data()
     required = ("name", "category", "owner_name", "owner_phone")
     if any(not data.get(key) for key in required):
         await state.clear()
         await message.answer(
-            "⏳ Сессия создания тенанта устарела. Начните заново:",
+            "⏳ Сессия создания тенанта устарела. Начните заново.",
             reply_markup=build_parent_menu(),
+        )
+        return
+    if not bot_token or ":" not in bot_token:
+        await message.answer(
+            "Токен выглядит неверно. Формат: 123456789:AA... (от @BotFather).",
+            reply_markup=build_wizard_keyboard(),
         )
         return
     summary = build_parent_tenant_summary(
@@ -405,12 +666,52 @@ async def parent_waiting_bot_token(message: types.Message, state: FSMContext):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(text="✅ Подтвердить", callback_data="parent:confirm_tenant"),
-                    InlineKeyboardButton(text="❌ Отмена", callback_data="parent:cancel_tenant"),
-                ]
+                    InlineKeyboardButton(text="⬅️ Назад", callback_data="wiz:back"),
+                ],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="wiz:cancel")],
             ]
         ),
     )
     await state.set_state(ParentTenantWizard.waiting_confirmation)
+
+
+WIZARD_STATE_INDEX = {
+    ParentTenantWizard.waiting_name.state: 0,
+    ParentTenantWizard.waiting_category.state: 1,
+    ParentTenantWizard.waiting_owner_name.state: 2,
+    ParentTenantWizard.waiting_owner_phone.state: 3,
+    ParentTenantWizard.waiting_bot_token.state: 4,
+    ParentTenantWizard.waiting_confirmation.state: 5,
+}
+
+
+async def _ask_wizard_step(call: types.CallbackQuery, state: FSMContext, index: int) -> None:
+    if index < 0:
+        await state.clear()
+        await safe_edit_message(call, build_parent_demo_message("Demo Salon"), build_parent_menu())
+        return
+    if index == 1:
+        await state.set_state(ParentTenantWizard.waiting_category)
+        await safe_edit_message(call, WIZARD_PROMPTS[1][1], build_category_keyboard())
+        return
+    target_state, prompt = WIZARD_PROMPTS[index]
+    await state.set_state(target_state)
+    await safe_edit_message(call, prompt, build_wizard_keyboard())
+
+
+@parent_router.callback_query(F.data == "wiz:back")
+async def parent_wizard_back(call: types.CallbackQuery, state: FSMContext):
+    current = await state.get_state()
+    index = WIZARD_STATE_INDEX.get(current, 0)
+    await _ask_wizard_step(call, state, index - 1)
+    await safe_answer(call)
+
+
+@parent_router.callback_query(F.data == "wiz:cancel")
+async def parent_wizard_cancel(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await safe_edit_message(call, "❌ Создание тенанта отменено.", build_parent_menu())
+    await safe_answer(call)
 
 
 @parent_router.callback_query(ParentTenantWizard.waiting_confirmation, F.data == "parent:confirm_tenant")
@@ -462,17 +763,22 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
         "updated_at": datetime.utcnow(),
     }
 
+    saved = False
     if db is not None and db.db is not None:
         await db.db.tenants.insert_one(tenant_document)
+        saved = True
 
     webhook_note = ""
-    try:
-        from app.bot.manager import bot_manager
+    if saved:
+        try:
+            from app.bot.manager import bot_manager
 
-        await bot_manager.register_tenant_webhook(data["bot_token"])
-        webhook_note = "\n🔗 Webhook дочернего бота зарегистрирован."
-    except Exception:
-        webhook_note = "\n⚠️ Webhook будет зарегистрирован при следующем старте сервера."
+            await bot_manager.register_tenant_webhook(data["bot_token"])
+            webhook_note = "\n🔗 Webhook дочернего бота зарегистрирован."
+        except Exception:
+            webhook_note = "\n⚠️ Webhook будет зарегистрирован при следующем старте сервера."
+    else:
+        webhook_note = "\n⚠️ База данных недоступна — тенант не сохранён. Попробуйте позже."
 
     await safe_edit_message(
         call,
@@ -484,8 +790,13 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
 
 
-@parent_router.callback_query(ParentTenantWizard.waiting_confirmation, F.data == "parent:cancel_tenant")
-async def parent_cancel_tenant(call: types.CallbackQuery, state: FSMContext):
+@parent_router.callback_query(F.data == "parent:confirm_tenant")
+async def parent_confirm_tenant_fallback(call: types.CallbackQuery, state: FSMContext):
+    await safe_answer(call, "Сессия устарела. Откройте /start и начните заново.", show_alert=True)
+
+
+@parent_router.callback_query(F.data == "parent:cancel_tenant")
+async def parent_cancel_tenant_fallback(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await safe_edit_message(call, "❌ Создание тенанта отменено.", build_parent_menu())
     await safe_answer(call)
-    await state.clear()

@@ -3,6 +3,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramRetryAfter
+from aiogram.types import BotCommand
 from aiogram.types.error_event import ErrorEvent
 
 from app.config import settings
@@ -53,6 +54,18 @@ class BotManager:
         if not settings.PARENT_BOT_TOKEN:
             logger.warning("Parent bot token is not configured. Skipping parent bot webhook registration.")
             return
+
+        try:
+            bot = self.get_bot_by_token(settings.PARENT_BOT_TOKEN)
+            await bot.set_my_commands(
+                [
+                    BotCommand(command="start", description="Открыть панель / меню"),
+                    BotCommand(command="login", description="Вход администратора"),
+                    BotCommand(command="cancel", description="Отменить текущее действие"),
+                ]
+            )
+        except Exception as e:
+            logger.warning("Failed to set parent bot commands: %s", e)
 
         try:
             await self.register_tenant_webhook(settings.PARENT_BOT_TOKEN)
