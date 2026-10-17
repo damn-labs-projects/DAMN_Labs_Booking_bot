@@ -243,6 +243,18 @@ def build_parent_tenants_list(tenants: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def build_tenants_keyboard(tenants: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for tenant in tenants[:10]:
+        name = tenant.get("name", "Без названия")
+        rows.append([InlineKeyboardButton(
+            text=f"🏢 {name}",
+            callback_data=f"tadm:open:{tenant.get('tenant_id')}",
+        )])
+    rows.append([InlineKeyboardButton(text="🏠 В меню", callback_data="tadm:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def build_parent_billing_summary(tenants: list[dict]) -> str:
     if not tenants:
         return "💳 Подписок пока нет. Первый trial будет активирован при создании нового тенанта."
@@ -439,7 +451,7 @@ async def parent_action(call: types.CallbackQuery, state: FSMContext):
 
     if action == "tenants":
         tenants = await _load_tenants()
-        await safe_edit_message(call, build_parent_tenants_list(tenants), build_parent_menu())
+        await safe_edit_message(call, build_parent_tenants_list(tenants), build_tenants_keyboard(tenants))
         await safe_answer(call)
         return
 
@@ -784,7 +796,12 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
         call,
         f"✅ Тенант создан.\n\nID: {tenant_id}\nНазвание: {data['name']}\nКатегория: {data['category']}\n"
         f"Trial активен до: {trial_end.strftime('%d.%m.%Y %H:%M')}\nТариф: $5/мес{webhook_note}",
-        build_parent_menu(),
+        InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🛠 Настроить тенант", callback_data=f"tadm:open:{tenant_id}")],
+                [InlineKeyboardButton(text="🏠 В меню", callback_data="tadm:menu")],
+            ]
+        ),
     )
     await safe_answer(call)
     await state.clear()

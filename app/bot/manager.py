@@ -11,6 +11,7 @@ from app.db.mongodb import db
 from app.bot.storage import MongoStorage
 from app.bot.handlers.booking import booking_router
 from app.bot.handlers.parent import parent_router
+from app.bot.handlers.tenant_admin import tenant_admin_router
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class BotManager:
         self.dp.include_router(booking_router)
         if parent_router is not None:
             self.dp.include_router(parent_router)
+        self.dp.include_router(tenant_admin_router)
         self.dp.errors.register(self._on_error)
         self.bots: dict[str, Bot] = {}
 

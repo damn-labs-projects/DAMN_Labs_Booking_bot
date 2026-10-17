@@ -1,4 +1,5 @@
 from aiogram import Router, F, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -9,8 +10,18 @@ from app.config import settings
 from app.db.mongodb import db
 from app.bot.handlers.parent import parent_start
 from app.services.booking_service import BookingService
+from app.services.tenant_texts import render
 
 booking_router = Router()
+
+
+async def safe_send(message: types.Message, text: str, **kwargs):
+    try:
+        return await message.answer(text, **kwargs)
+    except TelegramBadRequest:
+        kwargs.pop("parse_mode", None)
+        return await message.answer(text, **kwargs)
+
 
 class BookingSG(StatesGroup):
     selecting_service = State()
@@ -45,8 +56,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
     services_cursor = db.db.services.find({"tenant_id": tenant["tenant_id"], "is_active": True})
     services = await services_cursor.to_list(length=50)
 
+    welcome = render(tenant, "welcome")
+    services_prompt = render(tenant, "services_prompt")
+
     if not services:
-        await message.answer(f"Добро пожаловать в **{tenant['name']}**!\nНа данный момент услуг нет.")
+        await safe_send(message, f"{welcome}\n\nНа данный момент услуг нет.")
         return
 
     kb = [[InlineKeyboardButton(
@@ -54,8 +68,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
         callback_data=f"srv:{s['service_id']}"
     )] for s in services]
 
-    await message.answer(
-        f"Добро пожаловать в **{tenant['name']}**!\nВыберите услугу:",
+    await safe_send(
+        message,
+        f"{welcome}\n{services_prompt}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
         parse_mode="Markdown"
     )
@@ -121,12 +136,18 @@ async def process_date_choice(call: types.CallbackQuery, state: FSMContext):
 async def process_slot_choice(call: types.CallbackQuery, state: FSMContext):
     slot_time = call.data.split(":")[1]
     await state.update_data(selected_time=slot_time)
+    data = await state.get_data()
 
     btn = KeyboardButton(text="📱 Поделиться контактом", request_contact=True)
     kb = ReplyKeyboardMarkup(keyboard=[[btn]], resize_keyboard=True, one_time_keyboard=True)
 
+    tenant = None
+    if db.db is not None:
+        tenant = await db.db.tenants.find_one({"tenant_id": data["tenant_id"]})
+    phone_prompt = render(tenant or {}, "phone_prompt")
+
     await call.message.delete()
-    await call.message.answer("Отправьте ваш номер телефона для подтверждения:", reply_markup=kb)
+    await call.message.answer(phone_prompt, reply_markup=kb)
     await state.set_state(BookingSG.entering_phone)
 
 
@@ -146,8 +167,10 @@ async def process_phone(message: types.Message, state: FSMContext):
         time_str=data["selected_time"]
     )
 
-    await message.answer(
-        f"✅ **Вы успешно записаны!**\n\n"
+    confirmation_title = render(tenant, "confirmation_title")
+    await safe_send(
+        message,
+        f"{confirmation_title}\n\n"
         f"📍 **Заведение:** {tenant['name']}\n"
         f"💇‍♂️ **Услуга:** {service['name']}\n"
         f"📅 **Дата и время:** {data['selected_date']} {data['selected_time']}\n"
@@ -158,10 +181,11 @@ async def process_phone(message: types.Message, state: FSMContext):
 
     notif_chat_id = tenant.get("notification_chat_id")
     if notif_chat_id:
+        notify_title = render(tenant, "notify_title")
         try:
             await message.bot.send_message(
                 chat_id=notif_chat_id,
-                text=f"🔔 **Новая запись!**\n\n"
+                text=f"**{notify_title}**\n\n"
                      f"👤 **Клиент:** {full_name} ({phone})\n"
                      f"🛠 **Услуга:** {service['name']}\n"
                      f"🕒 **Время:** {data['selected_date']} {data['selected_time']}",
