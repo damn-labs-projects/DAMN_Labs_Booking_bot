@@ -88,6 +88,11 @@ except ModuleNotFoundError:  # pragma: no cover
     db = None
 
 try:
+    from app.config import settings
+except ModuleNotFoundError:  # pragma: no cover
+    settings = None
+
+try:
     TelegramBadRequest
 except NameError:  # pragma: no cover
     class TelegramBadRequest(Exception):
@@ -96,13 +101,61 @@ except NameError:  # pragma: no cover
 parent_router = Router()
 
 
+def _is_inline_markup(reply_markup) -> bool:
+    return isinstance(reply_markup, InlineKeyboardMarkup)
+
+
 async def safe_edit_message(call: types.CallbackQuery, text: str, reply_markup=None) -> None:
+    if not _is_inline_markup(reply_markup):
+        reply_markup = None
     try:
         await call.message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as exc:
-        if "message is not modified" in str(exc).lower():
+        message = str(exc).lower()
+        if "message is not modified" in message:
             return
-        raise
+        if "message to edit not found" in message or "query is too old" in message:
+            try:
+                await call.message.answer(text, reply_markup=reply_markup)
+            except TelegramBadRequest:
+                return
+            return
+        try:
+            await call.message.answer(text, reply_markup=reply_markup)
+        except TelegramBadRequest:
+            return
+
+
+async def safe_answer(call: types.CallbackQuery, *args, **kwargs) -> None:
+    try:
+        await call.answer(*args, **kwargs)
+    except TelegramBadRequest:
+        return
+
+
+async def is_admin(user_id) -> bool:
+    if user_id is None:
+        return True
+    if db is not None and db.db is not None:
+        doc = await db.db.admins.find_one({"telegram_id": int(user_id)})
+        if doc:
+            return True
+    return False
+
+
+async def mark_admin(user_id) -> None:
+    if user_id is None:
+        return
+    if db is not None and db.db is not None:
+        await db.db.admins.update_one(
+            {"telegram_id": int(user_id)},
+            {"$set": {"telegram_id": int(user_id), "updated_at": datetime.utcnow()}},
+            upsert=True,
+        )
+
+
+class AdminLoginSG(StatesGroup):
+    waiting_password = State()
 
 
 class ParentTenantWizard(StatesGroup):
@@ -146,15 +199,23 @@ def build_parent_tenant_summary(
     )
 
 
+def _mask_token(token: str) -> str:
+    if not token or token == "—":
+        return "—"
+    if len(token) <= 8:
+        return "…"
+    return f"…{token[-4:]}"
+
+
 def build_parent_tenants_list(tenants: list[dict]) -> str:
     if not tenants:
-        return "📋 Пока нет подключённых бизнесов. Добавьте первый тенант через кнопку \"Добавить тенант\"."
+        return '📋 Список бизнесов: пока пусто. Добавьте первый тенант через кнопку "Добавить тенант".'
 
     lines = ["📋 Список бизнесов:"]
     for index, tenant in enumerate(tenants[:10], start=1):
         status = tenant.get("subscription", {}).get("status", "trial")
         bot_token = tenant.get("bot_config", {}).get("token", "—")
-        lines.append(f"{index}. {tenant.get('name', 'Без названия')} | {status} | {bot_token}")
+        lines.append(f"{index}. {tenant.get('name', 'Без названия')} | {status} | {_mask_token(bot_token)}")
     return "\n".join(lines)
 
 
@@ -187,32 +248,65 @@ def build_parent_menu() -> InlineKeyboardMarkup:
 
 
 @parent_router.message(CommandStart())
-async def parent_start(message: types.Message):
-    tenant_name = "Demo Salon"
-    text = build_parent_demo_message(tenant_name)
-    await message.answer(text, reply_markup=build_parent_menu())
+async def parent_start(message: types.Message, state: FSMContext = None):
+    user_id = getattr(getattr(message, "from_user", None), "id", None)
+    if await is_admin(user_id):
+        if state is not None:
+            await state.clear()
+        tenant_name = "Demo Salon"
+        text = build_parent_demo_message(tenant_name)
+        await message.answer(text, reply_markup=build_parent_menu())
+        return
+
+    if state is not None:
+        await state.set_state(AdminLoginSG.waiting_password)
+    await message.answer("🔒 Это панель администратора D.A.M.N Booking Hub.\nВведите пароль администратора:")
+
+
+@parent_router.message(AdminLoginSG.waiting_password)
+async def parent_login_password(message: types.Message, state: FSMContext):
+    import hmac
+    import hashlib
+
+    password = (message.text or "").strip()
+    expected = getattr(settings, "ADMIN_PASSWORD", "") or ""
+    if expected and hmac.compare_digest(password.encode(), expected.encode()):
+        await mark_admin(getattr(message.from_user, "id", None))
+        await state.clear()
+        await message.answer(build_parent_demo_message("Demo Salon"), reply_markup=build_parent_menu())
+    else:
+        await message.answer("❌ Неверный пароль. Попробуйте ещё раз:")
 
 
 @parent_router.callback_query(F.data.startswith("parent:"))
 async def parent_action(call: types.CallbackQuery, state: FSMContext):
     action = call.data.split(":", 1)[1]
 
+    if not await is_admin(getattr(getattr(call, "from_user", None), "id", None)):
+        await safe_answer(call, "🔒 Требуется вход в панель администратора.", show_alert=True)
+        await state.set_state(AdminLoginSG.waiting_password)
+        try:
+            await call.message.answer("🔒 Введите пароль администратора:")
+        except TelegramBadRequest:
+            pass
+        return
+
     if action == "tenants":
         tenants = []
-        if db is not None and hasattr(db, "db"):
+        if db is not None and db.db is not None:
             cursor = db.db.tenants.find({}).sort("created_at", -1)
             tenants = await cursor.to_list(length=20)
         await safe_edit_message(call, build_parent_tenants_list(tenants), build_parent_menu())
-        await call.answer()
+        await safe_answer(call)
         return
 
     if action == "billing":
         tenants = []
-        if db is not None and hasattr(db, "db"):
+        if db is not None and db.db is not None:
             cursor = db.db.tenants.find({}).sort("created_at", -1)
             tenants = await cursor.to_list(length=20)
         await safe_edit_message(call, build_parent_billing_summary(tenants), build_parent_menu())
-        await call.answer()
+        await safe_answer(call)
         return
 
     if action == "demo":
@@ -221,25 +315,30 @@ async def parent_action(call: types.CallbackQuery, state: FSMContext):
             "🧪 Демонстрация: родительский бот управляет платформой D.A.M.N Booking Hub и запускает tenant-боты для бизнеса без разработки и хостинга.",
             build_parent_menu(),
         )
-        await call.answer()
+        await safe_answer(call)
         return
 
     if action == "add_tenant":
         await safe_edit_message(
             call,
             "📝 Создание нового тенанта. Введите название бизнеса:",
-            types.ReplyKeyboardRemove(),
         )
         await state.set_state(ParentTenantWizard.waiting_name)
-        await call.answer()
+        await safe_answer(call)
         return
 
     await safe_edit_message(call, "Команда не найдена.", build_parent_menu())
-    await call.answer()
+    await safe_answer(call)
 
 
 @parent_router.message(ParentTenantWizard.waiting_name)
 async def parent_waiting_name(message: types.Message, state: FSMContext):
+    if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
+        await state.clear()
+        return
+    if not (message.text or "").strip():
+        await message.answer("Название не может быть пустым. Введите название бизнеса:")
+        return
     await state.update_data(name=message.text.strip())
     await message.answer("Введите категорию бизнеса (beauty / medical / education / auto):")
     await state.set_state(ParentTenantWizard.waiting_category)
@@ -247,6 +346,9 @@ async def parent_waiting_name(message: types.Message, state: FSMContext):
 
 @parent_router.message(ParentTenantWizard.waiting_category)
 async def parent_waiting_category(message: types.Message, state: FSMContext):
+    if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
+        await state.clear()
+        return
     category = message.text.strip().lower()
     await state.update_data(category=category)
     await message.answer("Введите имя владельца:")
@@ -255,6 +357,9 @@ async def parent_waiting_category(message: types.Message, state: FSMContext):
 
 @parent_router.message(ParentTenantWizard.waiting_owner_name)
 async def parent_waiting_owner_name(message: types.Message, state: FSMContext):
+    if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
+        await state.clear()
+        return
     await state.update_data(owner_name=message.text.strip())
     await message.answer("Введите телефон владельца:")
     await state.set_state(ParentTenantWizard.waiting_owner_phone)
@@ -262,6 +367,9 @@ async def parent_waiting_owner_name(message: types.Message, state: FSMContext):
 
 @parent_router.message(ParentTenantWizard.waiting_owner_phone)
 async def parent_waiting_owner_phone(message: types.Message, state: FSMContext):
+    if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
+        await state.clear()
+        return
     await state.update_data(owner_phone=message.text.strip())
     await message.answer("Введите токен Telegram-бота от @BotFather:")
     await state.set_state(ParentTenantWizard.waiting_bot_token)
@@ -269,8 +377,19 @@ async def parent_waiting_owner_phone(message: types.Message, state: FSMContext):
 
 @parent_router.message(ParentTenantWizard.waiting_bot_token)
 async def parent_waiting_bot_token(message: types.Message, state: FSMContext):
+    if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
+        await state.clear()
+        return
     bot_token = message.text.strip()
     data = await state.get_data()
+    required = ("name", "category", "owner_name", "owner_phone")
+    if any(not data.get(key) for key in required):
+        await state.clear()
+        await message.answer(
+            "⏳ Сессия создания тенанта устарела. Начните заново:",
+            reply_markup=build_parent_menu(),
+        )
+        return
     summary = build_parent_tenant_summary(
         name=data["name"],
         category=data["category"],
@@ -296,7 +415,19 @@ async def parent_waiting_bot_token(message: types.Message, state: FSMContext):
 
 @parent_router.callback_query(ParentTenantWizard.waiting_confirmation, F.data == "parent:confirm_tenant")
 async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(getattr(getattr(call, "from_user", None), "id", None)):
+        await state.clear()
+        await safe_answer(call)
+        return
+
     data = await state.get_data()
+    required = ("name", "category", "owner_name", "owner_phone", "bot_token")
+    if any(not data.get(key) for key in required):
+        await state.clear()
+        await safe_edit_message(call, "⏳ Сессия создания тенанта устарела. Начните заново.", build_parent_menu())
+        await safe_answer(call)
+        return
+
     timestamp = int(datetime.utcnow().timestamp())
     tenant_id = f"tenant_{data['name'].lower().replace(' ', '_')}_{timestamp}"
     trial_end = datetime.utcnow() + timedelta(days=7)
@@ -331,15 +462,30 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
         "updated_at": datetime.utcnow(),
     }
 
-    if db is not None and hasattr(db, "db"):
+    if db is not None and db.db is not None:
         await db.db.tenants.insert_one(tenant_document)
-    await call.message.edit_text(
-        f"✅ Тенант создан.\n\nID: {tenant_id}\nНазвание: {data['name']}\nКатегория: {data['category']}\nTrial активен до: {trial_end.strftime('%d.%m.%Y %H:%M')}\nТокен: {data['bot_token']}"
+
+    webhook_note = ""
+    try:
+        from app.bot.manager import bot_manager
+
+        await bot_manager.register_tenant_webhook(data["bot_token"])
+        webhook_note = "\n🔗 Webhook дочернего бота зарегистрирован."
+    except Exception:
+        webhook_note = "\n⚠️ Webhook будет зарегистрирован при следующем старте сервера."
+
+    await safe_edit_message(
+        call,
+        f"✅ Тенант создан.\n\nID: {tenant_id}\nНазвание: {data['name']}\nКатегория: {data['category']}\n"
+        f"Trial активен до: {trial_end.strftime('%d.%m.%Y %H:%M')}\nТариф: $5/мес{webhook_note}",
+        build_parent_menu(),
     )
+    await safe_answer(call)
     await state.clear()
 
 
 @parent_router.callback_query(ParentTenantWizard.waiting_confirmation, F.data == "parent:cancel_tenant")
 async def parent_cancel_tenant(call: types.CallbackQuery, state: FSMContext):
-    await call.message.edit_text("❌ Создание тенанта отменено.", reply_markup=build_parent_menu())
+    await safe_edit_message(call, "❌ Создание тенанта отменено.", build_parent_menu())
+    await safe_answer(call)
     await state.clear()

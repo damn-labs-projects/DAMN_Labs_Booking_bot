@@ -21,7 +21,7 @@ class BookingSG(StatesGroup):
 @booking_router.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     if message.bot.token == settings.PARENT_BOT_TOKEN:
-        await parent_start(message)
+        await parent_start(message, state)
         return
 
     await state.clear()
@@ -63,9 +63,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 
 @booking_router.message(Command(commands=["help", "menu", "startup"]))
-async def cmd_help(message: types.Message):
+async def cmd_help(message: types.Message, state: FSMContext):
     if message.bot.token == settings.PARENT_BOT_TOKEN:
-        await parent_start(message)
+        await parent_start(message, state)
         return
 
     await message.answer(

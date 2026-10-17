@@ -22,6 +22,8 @@ async def connect_to_mongo():
         await db.db.staff.create_index("tenant_id")
         await db.db.appointments.create_index([("tenant_id", 1), ("start_time", 1)])
         await db.db.appointments.create_index([("tenant_id", 1), ("client_info.telegram_id", 1)])
+        await db.db.admins.create_index("telegram_id", unique=True)
+        await db.db.fsm_states.create_index("expires_at", expireAfterSeconds=0)
         return True
     except Exception as exc:
         db.client = None

@@ -1,17 +1,23 @@
+import logging
+
 from fastapi import APIRouter, Request
 from aiogram.types import Update
 from app.bot.manager import bot_manager
 from app.db.mongodb import db
 from datetime import datetime, timedelta
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.post("/telegram/{bot_token}")
 async def telegram_webhook(bot_token: str, request: Request):
-    bot = bot_manager.get_bot_by_token(bot_token)
-    data = await request.json()
-    update = Update(**data)
-    await bot_manager.dp.feed_update(bot=bot, update=update)
+    try:
+        bot = bot_manager.get_bot_by_token(bot_token)
+        data = await request.json()
+        update = Update(**data)
+        await bot_manager.dp.feed_update(bot=bot, update=update)
+    except Exception:
+        logger.exception("Unhandled error while processing Telegram update for bot ...%s", bot_token[-6:])
     return {"status": "ok"}
 
 @router.post("/paddle")

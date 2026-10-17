@@ -3,10 +3,11 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramRetryAfter
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types.error_event import ErrorEvent
 
 from app.config import settings
 from app.db.mongodb import db
+from app.bot.storage import MongoStorage
 from app.bot.handlers.booking import booking_router
 from app.bot.handlers.parent import parent_router
 
@@ -14,11 +15,20 @@ logger = logging.getLogger(__name__)
 
 class BotManager:
     def __init__(self):
-        self.dp = Dispatcher(storage=MemoryStorage())
+        self.dp = Dispatcher(storage=MongoStorage())
         self.dp.include_router(booking_router)
         if parent_router is not None:
             self.dp.include_router(parent_router)
+        self.dp.errors.register(self._on_error)
         self.bots: dict[str, Bot] = {}
+
+    async def _on_error(self, event: ErrorEvent) -> None:
+        logger.error(
+            "Error while processing update %s: %s",
+            event.update.update_id if event.update else "?",
+            event.exception,
+            exc_info=event.exception,
+        )
 
     def get_bot_by_token(self, token: str) -> Bot:
         if token not in self.bots:
