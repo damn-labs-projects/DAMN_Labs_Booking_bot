@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ from app.bot.handlers.parent import (
     build_parent_demo_message,
     build_parent_tenant_summary,
     build_parent_tenants_list,
+    parent_action,
 )
 from app.config import settings
 
@@ -67,12 +69,41 @@ class ParentBotTests(unittest.TestCase):
 
         try:
             message = FakeMessage()
-            import asyncio
             asyncio.run(cmd_start(message, FakeState()))
             self.assertTrue(message._answers)
             self.assertNotIn("Ошибка: Заведение не найдено.", message._answers[0])
         finally:
             settings.PARENT_BOT_TOKEN = old_token
+
+    def test_parent_bot_callback_button_route_works(self):
+        class FakeMessage:
+            def __init__(self):
+                self.edits = []
+                self.answers = []
+
+            async def edit_text(self, text, **kwargs):
+                self.edits.append(text)
+
+            async def answer(self, *args, **kwargs):
+                self.answers.append("answer")
+
+        class FakeCall:
+            def __init__(self):
+                self.data = "parent:tenants"
+                self.message = FakeMessage()
+
+            async def answer(self, *args, **kwargs):
+                pass
+
+        class FakeState:
+            async def set_state(self, *args, **kwargs):
+                pass
+
+        message = FakeCall()
+        asyncio.run(parent_action(message, FakeState()))
+
+        self.assertTrue(message.message.edits)
+        self.assertIn("Список бизнесов", message.message.edits[0])
 
 
 if __name__ == "__main__":

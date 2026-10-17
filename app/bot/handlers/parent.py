@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 try:
     from aiogram import F, Router, types
+    from aiogram.exceptions import TelegramBadRequest
     from aiogram.filters import CommandStart
     from aiogram.fsm.context import FSMContext
     from aiogram.fsm.state import State, StatesGroup
@@ -86,7 +87,22 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     db = None
 
+try:
+    TelegramBadRequest
+except NameError:  # pragma: no cover
+    class TelegramBadRequest(Exception):
+        pass
+
 parent_router = Router()
+
+
+async def safe_edit_message(call: types.CallbackQuery, text: str, reply_markup=None) -> None:
+    try:
+        await call.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return
+        raise
 
 
 class ParentTenantWizard(StatesGroup):
@@ -177,7 +193,7 @@ async def parent_start(message: types.Message):
     await message.answer(text, reply_markup=build_parent_menu())
 
 
-@parent_router.callback_query(lambda c: c.data and c.data.startswith("parent:"))
+@parent_router.callback_query(F.data.startswith("parent:"))
 async def parent_action(call: types.CallbackQuery, state: FSMContext):
     action = call.data.split(":", 1)[1]
 
@@ -186,7 +202,7 @@ async def parent_action(call: types.CallbackQuery, state: FSMContext):
         if db is not None and hasattr(db, "db"):
             cursor = db.db.tenants.find({}).sort("created_at", -1)
             tenants = await cursor.to_list(length=20)
-        await call.message.edit_text(build_parent_tenants_list(tenants), reply_markup=build_parent_menu())
+        await safe_edit_message(call, build_parent_tenants_list(tenants), build_parent_menu())
         await call.answer()
         return
 
@@ -195,28 +211,30 @@ async def parent_action(call: types.CallbackQuery, state: FSMContext):
         if db is not None and hasattr(db, "db"):
             cursor = db.db.tenants.find({}).sort("created_at", -1)
             tenants = await cursor.to_list(length=20)
-        await call.message.edit_text(build_parent_billing_summary(tenants), reply_markup=build_parent_menu())
+        await safe_edit_message(call, build_parent_billing_summary(tenants), build_parent_menu())
         await call.answer()
         return
 
     if action == "demo":
-        await call.message.edit_text(
+        await safe_edit_message(
+            call,
             "🧪 Демонстрация: родительский бот управляет платформой D.A.M.N Booking Hub и запускает tenant-боты для бизнеса без разработки и хостинга.",
-            reply_markup=build_parent_menu(),
+            build_parent_menu(),
         )
         await call.answer()
         return
 
     if action == "add_tenant":
-        await call.message.edit_text(
+        await safe_edit_message(
+            call,
             "📝 Создание нового тенанта. Введите название бизнеса:",
-            reply_markup=types.ReplyKeyboardRemove(),
+            types.ReplyKeyboardRemove(),
         )
         await state.set_state(ParentTenantWizard.waiting_name)
         await call.answer()
         return
 
-    await call.message.edit_text("Команда не найдена.", reply_markup=build_parent_menu())
+    await safe_edit_message(call, "Команда не найдена.", build_parent_menu())
     await call.answer()
 
 
