@@ -7,6 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.db.mongodb import db
+from app.services.tenant_auth import hash_owner_password, owner_password_set
 from app.services.tenant_texts import DEFAULT_TEXTS, TEXT_LABELS, get_texts
 from app.bot.handlers.parent import (
     _load_tenants,
@@ -20,7 +21,11 @@ from app.bot.handlers.parent import (
     safe_edit_message,
 )
 
+from app.bot.filters import is_parent_bot
+
 tenant_admin_router = Router()
+tenant_admin_router.message.filter(is_parent_bot)
+tenant_admin_router.callback_query.filter(is_parent_bot)
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 CURRENCIES = ["KGS", "USD", "EUR", "KZT", "RUB"]
@@ -71,6 +76,12 @@ async def build_tenant_card(tenant: dict):
     brand = tenant.get("branding") or {}
     sub_status = tenant.get("subscription", {}).get("status", "—")
     services_count = await _count_services(tid)
+    owner_ids = (tenant.get("owner") or {}).get("telegram_ids") or []
+    if not owner_ids:
+        owner_info = tenant.get("owner_info") or {}
+        if owner_info.get("telegram_id"):
+            owner_ids = [owner_info["telegram_id"]]
+    owner_line = ", ".join(str(i) for i in owner_ids) if owner_ids else "не задан"
 
     text = (
         f"{brand.get('emoji', '')} {tenant.get('name', '—')}\n"
@@ -81,7 +92,9 @@ async def build_tenant_card(tenant: dict):
         f"🛠 Услуг: {services_count}\n"
         f"🕘 Часы: {hours.get('start', '09:00')}–{hours.get('end', '20:00')} "
         f"(слот {hours.get('slot_duration_minutes', 60)} мин)\n"
-        f"🔑 Токен: {_mask_token(tenant.get('bot_config', {}).get('token', ''))}"
+        f"🆔 Telegram ID владельца: {owner_line}\n"
+        f"🔑 Токен: {_mask_token(tenant.get('bot_config', {}).get('token', ''))}\n"
+        f"👤 Пароль владельца: {'настроен' if owner_password_set(tenant) else 'не задан'}"
     )
     if brand.get("description"):
         text += f"\n📝 {brand['description']}"
@@ -92,6 +105,7 @@ async def build_tenant_card(tenant: dict):
             [InlineKeyboardButton(text="✏️ Тексты", callback_data=f"tadm:txt:{tid}")],
             [InlineKeyboardButton(text="🕘 Часы работы", callback_data=f"tadm:hours:{tid}")],
             [InlineKeyboardButton(text="🎨 Брендинг", callback_data=f"tadm:brand:{tid}")],
+            [InlineKeyboardButton(text="👤 Пароль владельца", callback_data=f"tadm:ownerpw:{tid}")],
             [InlineKeyboardButton(text="🔗 Webhook / статус", callback_data=f"tadm:webhook:{tid}")],
             [
                 InlineKeyboardButton(text="⬅️ К списку", callback_data="tadm:list"),
@@ -119,7 +133,7 @@ async def tadm_open(call: types.CallbackQuery):
     tid = call.data.split(":", 2)[2]
     tenant = await _get_tenant(tid)
     if not tenant:
-        await safe_edit_message(call, "Тенант не найден.", build_parent_menu())
+        await safe_edit_message(call, "Бизнес не найден.", build_parent_menu())
         await safe_answer(call)
         return
     text, kb = await build_tenant_card(tenant)
@@ -151,7 +165,7 @@ async def tadm_webhook(call: types.CallbackQuery):
     tid = call.data.split(":", 2)[2]
     tenant = await _get_tenant(tid)
     if not tenant:
-        await safe_answer(call, "Тенант не найден.", show_alert=True)
+        await safe_answer(call, "Бизнес не найден.", show_alert=True)
         return
     token = tenant.get("bot_config", {}).get("token")
     note = "⚠️ Токен не задан."
@@ -311,7 +325,7 @@ async def tadm_texts(call: types.CallbackQuery):
     tid = call.data.split(":", 2)[2]
     tenant = await _get_tenant(tid)
     if not tenant:
-        await safe_answer(call, "Тенант не найден.", show_alert=True)
+        await safe_answer(call, "Бизнес не найден.", show_alert=True)
         return
     texts = get_texts(tenant)
     lines = ["✏️ Тексты дочернего бота:"]
@@ -356,7 +370,7 @@ async def tadm_hours(call: types.CallbackQuery):
     tid = call.data.split(":", 2)[2]
     tenant = await _get_tenant(tid)
     if not tenant:
-        await safe_answer(call, "Тенант не найден.", show_alert=True)
+        await safe_answer(call, "Бизнес не найден.", show_alert=True)
         return
     hours = tenant.get("working_hours", {})
     text = (
@@ -399,7 +413,7 @@ async def tadm_brand(call: types.CallbackQuery):
     tid = call.data.split(":", 2)[2]
     tenant = await _get_tenant(tid)
     if not tenant:
-        await safe_answer(call, "Тенант не найден.", show_alert=True)
+        await safe_answer(call, "Бизнес не найден.", show_alert=True)
         return
     brand = tenant.get("branding") or {}
     text = (
@@ -433,6 +447,26 @@ async def tadm_brand_edit(call: types.CallbackQuery, state: FSMContext):
     await safe_answer(call)
 
 
+@tenant_admin_router.callback_query(F.data.startswith("tadm:ownerpw:"))
+async def tadm_owner_password(call: types.CallbackQuery, state: FSMContext):
+    if not await _guard(call):
+        return
+    tid = call.data.split(":", 2)[2]
+    tenant = await _get_tenant(tid)
+    current = "задан" if tenant and owner_password_set(tenant) else "не задан"
+    await state.clear()
+    await state.set_state(EditFieldSG.waiting_value)
+    await state.update_data(tid=tid, kind="owner_password", field="password_hash")
+    await safe_edit_message(
+        call,
+        f"👤 Пароль владельца бизнеса (сейчас: {current}).\n\n"
+        "Отправьте новый пароль сообщением. Владелец использует его для входа "
+        "командой /owner в дочернем боте.",
+        _back_kb(tid),
+    )
+    await safe_answer(call)
+
+
 @tenant_admin_router.message(EditFieldSG.waiting_value)
 async def tadm_edit_value(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -460,6 +494,8 @@ async def tadm_edit_value(message: types.Message, state: FSMContext):
             await _save_tenant_field(tid, {f"working_hours.{field}": value})
     elif kind == "brand":
         await _save_tenant_field(tid, {f"branding.{field}": value})
+    elif kind == "owner_password":
+        await _save_tenant_field(tid, {"owner.password_hash": hash_owner_password(tid, value)})
     else:
         await state.clear()
         await message.answer("Неизвестное действие.")

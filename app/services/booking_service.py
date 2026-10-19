@@ -1,10 +1,22 @@
 from datetime import datetime, timedelta
+
+from pymongo.errors import DuplicateKeyError
+
 from app.db.mongodb import db
 from app.models.tenant import AppointmentModel, ClientInfo
+from app.services import subscription
+
+
+class BookingRejected(Exception):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
 
 class BookingService:
     @staticmethod
     async def get_available_slots(tenant_id: str, service_id: str, date_str: str) -> list[str]:
+        if db.db is None:
+            return []
         tenant = await db.db.tenants.find_one({"tenant_id": tenant_id})
         service = await db.db.services.find_one({"tenant_id": tenant_id, "service_id": service_id})
         if not tenant or not service:
@@ -48,11 +60,22 @@ class BookingService:
 
     @staticmethod
     async def create_appointment(tenant_id: str, service_id: str, telegram_id: int, full_name: str, phone: str, date_str: str, time_str: str):
+        if db.db is None:
+            raise BookingRejected("Сервис временно недоступен. Попробуйте чуть позже.")
+
         tenant = await db.db.tenants.find_one({"tenant_id": tenant_id})
         service = await db.db.services.find_one({"tenant_id": tenant_id, "service_id": service_id})
 
+        if not tenant or not service:
+            raise BookingRejected("Заведение или услуга больше недоступны. Начните заново — /start.")
+
+        if subscription.is_blocked(tenant):
+            raise BookingRejected("Обслуживание заведения временно приостановлено.")
+
         start_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
         end_time = start_time + timedelta(minutes=service["duration_minutes"])
+
+        await BookingService.assert_slot_free(tenant_id, start_time, end_time)
 
         appointment = AppointmentModel(
             tenant_id=tenant_id,
@@ -63,5 +86,26 @@ class BookingService:
             status="confirmed"
         )
 
-        await db.db.appointments.insert_one(appointment.model_dump())
+        try:
+            await db.db.appointments.insert_one(appointment.model_dump())
+        except DuplicateKeyError:
+            raise BookingRejected(
+                "Это время уже заняли. Выберите другой слот — /start."
+            )
         return appointment.model_dump(), tenant, service
+
+    @staticmethod
+    async def assert_slot_free(tenant_id: str, start_time: datetime, end_time: datetime) -> None:
+        if db.db is None:
+            raise BookingRejected("Сервис временно недоступен. Попробуйте чуть позже.")
+
+        conflict = await db.db.appointments.find_one({
+            "tenant_id": tenant_id,
+            "status": {"$ne": "cancelled"},
+            "start_time": {"$lt": end_time},
+            "end_time": {"$gt": start_time},
+        })
+        if conflict:
+            raise BookingRejected(
+                "Это время уже заняли. Выберите другой слот — /start."
+            )

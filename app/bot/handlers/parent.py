@@ -94,12 +94,29 @@ except ModuleNotFoundError:  # pragma: no cover
     settings = None
 
 try:
+    from app.api.v1.pages import build_pay_link, payment_is_configured
+except (ModuleNotFoundError, ImportError):  # pragma: no cover
+    def payment_is_configured() -> bool:
+        return False
+
+    def build_pay_link(tenant_id: str) -> str:
+        return f"/pay?tenant_id={tenant_id}"
+
+try:
     TelegramBadRequest
 except NameError:  # pragma: no cover
     class TelegramBadRequest(Exception):
         pass
 
 parent_router = Router()
+
+try:  # pragma: no cover - fallback router has no filter API
+    from app.bot.filters import is_parent_bot
+
+    parent_router.message.filter(is_parent_bot)
+    parent_router.callback_query.filter(is_parent_bot)
+except (AttributeError, ImportError):
+    pass
 
 
 def _is_inline_markup(reply_markup) -> bool:
@@ -135,8 +152,8 @@ async def safe_answer(call: types.CallbackQuery, *args, **kwargs) -> None:
 
 
 async def is_admin(user_id) -> bool:
-    if user_id is None:
-        return True
+    if not user_id:
+        return False
     if db is not None and db.db is not None:
         doc = await db.db.admins.find_one({"telegram_id": int(user_id)})
         if doc:
@@ -164,6 +181,7 @@ class ParentTenantWizard(StatesGroup):
     waiting_category = State()
     waiting_owner_name = State()
     waiting_owner_phone = State()
+    waiting_owner_telegram_id = State()
     waiting_bot_token = State()
     waiting_confirmation = State()
 
@@ -196,7 +214,7 @@ def build_parent_demo_message(tenant_name: str = "Demo Salon") -> str:
         "🧩 Демо-режим родительского бота D.A.M.N Labs\n\n"
         f"Вы работаете в платформе D.A.M.N Booking Hub для бизнеса: {tenant_name}.\n"
         "Это родительский бот, через который администратор платформы управляет\n"
-        "тенантами, подписками, настройками и запуском дочерних ботов.\n\n"
+        "бизнесами, подписками, настройками и запуском дочерних ботов.\n\n"
         "Доступные сценарии:\n"
         "• просмотр всех бизнесов\n"
         "• управление подписками Paddle\n"
@@ -210,14 +228,16 @@ def build_parent_tenant_summary(
     category: str,
     owner_name: str,
     owner_phone: str,
+    owner_telegram_id: str,
     bot_token: str,
 ) -> str:
     return (
-        "📋 Подтверждение нового тенанта\n\n"
+        "📋 Подтверждение нового бизнеса\n\n"
         f"Название: {name}\n"
         f"Категория: {category}\n"
         f"Владелец: {owner_name}\n"
         f"Телефон: {owner_phone}\n"
+        f"Telegram ID владельца: {owner_telegram_id}\n"
         f"Telegram bot token: {bot_token}\n\n"
         "После подтверждения данные будут сохранены в MongoDB и бот будет подключён в платформу."
     )
@@ -233,7 +253,7 @@ def _mask_token(token: str) -> str:
 
 def build_parent_tenants_list(tenants: list[dict]) -> str:
     if not tenants:
-        return '📋 Список бизнесов: пока пусто. Добавьте первый тенант через кнопку "Добавить тенант".'
+        return '📋 Список бизнесов: пока пусто. Добавьте первый бизнес через кнопку «Добавить бизнес».'
 
     lines = ["📋 Список бизнесов:"]
     for index, tenant in enumerate(tenants[:10], start=1):
@@ -257,15 +277,34 @@ def build_tenants_keyboard(tenants: list[dict]) -> InlineKeyboardMarkup:
 
 def build_parent_billing_summary(tenants: list[dict]) -> str:
     if not tenants:
-        return "💳 Подписок пока нет. Первый trial будет активирован при создании нового тенанта."
+        return "💳 Подписок пока нет. Первый trial будет активирован при создании нового бизнеса."
 
     lines = ["💳 Статус подписок:"]
+    from app.config import settings
     for tenant in tenants[:10]:
         status = tenant.get("subscription", {}).get("status", "trial")
         deadline = tenant.get("subscription", {}).get("current_period_end")
-        deadline_text = deadline.strftime("%d.%m.%Y") if deadline else "7 дней trial"
+        deadline_text = deadline.strftime("%d.%m.%Y") if hasattr(deadline, "strftime") else "7 дней trial"
         lines.append(f"- {tenant.get('name', 'Без названия')}: {status} | до {deadline_text}")
     return "\n".join(lines)
+
+
+def build_billing_keyboard(tenants: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for tenant in tenants[:10]:
+        tenant_id = tenant.get("tenant_id") or ""
+        if not tenant_id:
+            continue
+        name = tenant.get("name", "Без названия")[:24]
+        status = tenant.get("subscription", {}).get("status", "trial")
+        if status in ("active", "trial"):
+            label = "💳" if status == "trial" else "✅"
+            rows.append([InlineKeyboardButton(
+                text=f"{label} {name}",
+                callback_data=f"parent:pay:{tenant_id}",
+            )])
+    rows.append([InlineKeyboardButton(text="🏠 В меню", callback_data="parent:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_parent_menu() -> InlineKeyboardMarkup:
@@ -276,7 +315,7 @@ def build_parent_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="💳 Подписки", callback_data="parent:billing"),
             ],
             [
-                InlineKeyboardButton(text="➕ Добавить тенант", callback_data="parent:add_tenant"),
+                InlineKeyboardButton(text="➕ Добавить бизнес", callback_data="parent:add_tenant"),
                 InlineKeyboardButton(text="🧪 Демо", callback_data="parent:demo"),
             ],
         ]
@@ -305,11 +344,17 @@ def build_wizard_keyboard(back: bool = True) -> InlineKeyboardMarkup:
 
 
 WIZARD_PROMPTS = [
-    (ParentTenantWizard.waiting_name, "📝 Шаг 1/5. Введите название бизнеса:"),
-    (ParentTenantWizard.waiting_category, "🏷 Шаг 2/5. Выберите категорию бизнеса:"),
-    (ParentTenantWizard.waiting_owner_name, "👤 Шаг 3/5. Введите имя владельца:"),
-    (ParentTenantWizard.waiting_owner_phone, "📞 Шаг 4/5. Введите телефон владельца:"),
-    (ParentTenantWizard.waiting_bot_token, "🔑 Шаг 5/5. Введите токен Telegram-бота от @BotFather:"),
+    (ParentTenantWizard.waiting_name, "📝 Шаг 1/6. Введите название бизнеса:"),
+    (ParentTenantWizard.waiting_category, "🏷 Шаг 2/6. Выберите категорию бизнеса:"),
+    (ParentTenantWizard.waiting_owner_name, "👤 Шаг 3/6. Введите имя владельца:"),
+    (ParentTenantWizard.waiting_owner_phone, "📞 Шаг 4/6. Введите телефон владельца:"),
+    (
+        ParentTenantWizard.waiting_owner_telegram_id,
+        "🆔 Шаг 5/6. Введите Telegram ID владельца бизнеса.\n\n"
+        "Владелец сможет войти в панель управления дочерним ботом командой /owner.\n"
+        "Узнать ID можно через бота @userinfobot.",
+    ),
+    (ParentTenantWizard.waiting_bot_token, "🔑 Шаг 6/6. Введите токен Telegram-бота от @BotFather:"),
 ]
 
 
@@ -457,7 +502,52 @@ async def parent_action(call: types.CallbackQuery, state: FSMContext):
 
     if action == "billing":
         tenants = await _load_tenants()
-        await safe_edit_message(call, build_parent_billing_summary(tenants), build_parent_menu())
+        await safe_edit_message(call, build_parent_billing_summary(tenants), build_billing_keyboard(tenants))
+        await safe_answer(call)
+        return
+
+    if action == "menu":
+        await safe_edit_message(call, "🏠 Главное меню", build_parent_menu())
+        await safe_answer(call)
+        return
+
+    if action.startswith("pay:"):
+        tenant_id = action.split(":", 1)[1].strip()
+        if not tenant_id:
+            await safe_edit_message(call, "Не указан бизнес для оплаты.", build_parent_menu())
+            await safe_answer(call)
+            return
+        if not payment_is_configured():
+            support = settings.SUPPORT_CONTACT if settings else ""
+            await safe_edit_message(
+                call,
+                "💳 Оплата пока не подключена.\n"
+                "Напишите в поддержку — подключим оплату вручную."
+                + (f"\n\n{support}" if support else ""),
+                build_parent_menu(),
+            )
+            await safe_answer(call)
+            return
+        link = build_pay_link(tenant_id)
+        if not link.startswith("http"):
+            await safe_edit_message(
+                call,
+                "💳 Не задан BASE_WEBHOOK_URL — ссылка на оплату недоступна.",
+                build_parent_menu(),
+            )
+            await safe_answer(call)
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить подписку", url=link)],
+            [InlineKeyboardButton(text="⬅️ К подпискам", callback_data="parent:billing")],
+        ])
+        await safe_edit_message(
+            call,
+            f"💳 Оплата подписки\nБизнес: {tenant_id}\n\n"
+            "Оплата проходит на защищённой странице. После оплаты подписка "
+            "активируется в течение минуты.",
+            kb,
+        )
         await safe_answer(call)
         return
 
@@ -639,6 +729,25 @@ async def parent_waiting_owner_phone(message: types.Message, state: FSMContext):
         return
     await state.update_data(owner_phone=phone)
     await message.answer(WIZARD_PROMPTS[4][1], reply_markup=build_wizard_keyboard())
+    await state.set_state(ParentTenantWizard.waiting_owner_telegram_id)
+
+
+@parent_router.message(ParentTenantWizard.waiting_owner_telegram_id)
+async def parent_waiting_owner_telegram_id(message: types.Message, state: FSMContext):
+    if not await is_admin(getattr(getattr(message, "from_user", None), "id", None)):
+        await state.clear()
+        return
+    raw = (message.text or "").strip()
+    normalized = raw[1:] if raw.startswith("-") else raw
+    if not normalized.isdigit():
+        await message.answer(
+            "Telegram ID должен состоять из цифр. Например: 123456789.\n"
+            "Узнать свой ID можно у @userinfobot.",
+            reply_markup=build_wizard_keyboard(),
+        )
+        return
+    await state.update_data(owner_telegram_id=int(normalized))
+    await message.answer(WIZARD_PROMPTS[5][1], reply_markup=build_wizard_keyboard())
     await state.set_state(ParentTenantWizard.waiting_bot_token)
 
 
@@ -649,11 +758,11 @@ async def parent_waiting_bot_token(message: types.Message, state: FSMContext):
         return
     bot_token = (message.text or "").strip()
     data = await state.get_data()
-    required = ("name", "category", "owner_name", "owner_phone")
+    required = ("name", "category", "owner_name", "owner_phone", "owner_telegram_id")
     if any(not data.get(key) for key in required):
         await state.clear()
         await message.answer(
-            "⏳ Сессия создания тенанта устарела. Начните заново.",
+            "⏳ Сессия создания бизнеса устарела. Начните заново.",
             reply_markup=build_parent_menu(),
         )
         return
@@ -668,6 +777,7 @@ async def parent_waiting_bot_token(message: types.Message, state: FSMContext):
         category=data["category"],
         owner_name=data["owner_name"],
         owner_phone=data["owner_phone"],
+        owner_telegram_id=str(data["owner_telegram_id"]),
         bot_token=bot_token,
     )
 
@@ -692,8 +802,9 @@ WIZARD_STATE_INDEX = {
     ParentTenantWizard.waiting_category.state: 1,
     ParentTenantWizard.waiting_owner_name.state: 2,
     ParentTenantWizard.waiting_owner_phone.state: 3,
-    ParentTenantWizard.waiting_bot_token.state: 4,
-    ParentTenantWizard.waiting_confirmation.state: 5,
+    ParentTenantWizard.waiting_owner_telegram_id.state: 4,
+    ParentTenantWizard.waiting_bot_token.state: 5,
+    ParentTenantWizard.waiting_confirmation.state: 6,
 }
 
 
@@ -722,7 +833,7 @@ async def parent_wizard_back(call: types.CallbackQuery, state: FSMContext):
 @parent_router.callback_query(F.data == "wiz:cancel")
 async def parent_wizard_cancel(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await safe_edit_message(call, "❌ Создание тенанта отменено.", build_parent_menu())
+    await safe_edit_message(call, "❌ Создание бизнеса отменено.", build_parent_menu())
     await safe_answer(call)
 
 
@@ -734,16 +845,17 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
         return
 
     data = await state.get_data()
-    required = ("name", "category", "owner_name", "owner_phone", "bot_token")
+    required = ("name", "category", "owner_name", "owner_phone", "owner_telegram_id", "bot_token")
     if any(not data.get(key) for key in required):
         await state.clear()
-        await safe_edit_message(call, "⏳ Сессия создания тенанта устарела. Начните заново.", build_parent_menu())
+        await safe_edit_message(call, "⏳ Сессия создания бизнеса устарела. Начните заново.", build_parent_menu())
         await safe_answer(call)
         return
 
     timestamp = int(datetime.utcnow().timestamp())
     tenant_id = f"tenant_{data['name'].lower().replace(' ', '_')}_{timestamp}"
     trial_end = datetime.utcnow() + timedelta(days=7)
+    owner_telegram_id = int(data["owner_telegram_id"])
 
     tenant_document = {
         "tenant_id": tenant_id,
@@ -752,7 +864,10 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
         "owner_info": {
             "name": data["owner_name"],
             "phone": data["owner_phone"],
-            "telegram_id": getattr(call.from_user, "id", 0),
+            "telegram_id": owner_telegram_id,
+        },
+        "owner": {
+            "telegram_ids": [owner_telegram_id],
         },
         "bot_config": {
             "token": data["bot_token"],
@@ -764,7 +879,7 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
             "end": "20:00",
             "slot_duration_minutes": 60,
         },
-        "notification_chat_id": str(getattr(call.from_user, "id", 0)),
+        "notification_chat_id": str(owner_telegram_id),
         "subscription": {
             "status": "trial",
             "paddle_subscription_id": None,
@@ -781,24 +896,48 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
         saved = True
 
     webhook_note = ""
+    bot_link = ""
     if saved:
         try:
             from app.bot.manager import bot_manager
 
+            bot = bot_manager.get_bot_by_token(data["bot_token"])
             await bot_manager.register_tenant_webhook(data["bot_token"])
             webhook_note = "\n🔗 Webhook дочернего бота зарегистрирован."
+            try:
+                me = await bot.get_me()
+                if me.username:
+                    bot_link = f"\n🤖 Дочерний бот: https://t.me/{me.username}"
+                    await db.db.tenants.update_one(
+                        {"tenant_id": tenant_id},
+                        {"$set": {"bot_config.username": me.username}},
+                    )
+                    try:
+                        await bot.send_message(
+                            owner_telegram_id,
+                            f"👋 Ваш бизнес «{data['name']}» подключён к D.A.M.N Booking Hub.\n"
+                            "Откройте это меню-кнопку ниже или отправьте /owner, чтобы управлять "
+                            "услугами, часами и записями.",
+                            reply_markup=InlineKeyboardMarkup(
+                                inline_keyboard=[[InlineKeyboardButton(text="⚙️ Панель владельца", callback_data="own:menu")]]
+                            ),
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         except Exception:
             webhook_note = "\n⚠️ Webhook будет зарегистрирован при следующем старте сервера."
     else:
-        webhook_note = "\n⚠️ База данных недоступна — тенант не сохранён. Попробуйте позже."
+        webhook_note = "\n⚠️ База данных недоступна — бизнес не сохранён. Попробуйте позже."
 
     await safe_edit_message(
         call,
-        f"✅ Тенант создан.\n\nID: {tenant_id}\nНазвание: {data['name']}\nКатегория: {data['category']}\n"
-        f"Trial активен до: {trial_end.strftime('%d.%m.%Y %H:%M')}\nТариф: $5/мес{webhook_note}",
+        f"✅ Бизнес создан.\n\nID: {tenant_id}\nНазвание: {data['name']}\nКатегория: {data['category']}\n"
+        f"Trial активен до: {trial_end.strftime('%d.%m.%Y %H:%M')}\nТариф: $5/мес{bot_link}{webhook_note}",
         InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🛠 Настроить тенант", callback_data=f"tadm:open:{tenant_id}")],
+                [InlineKeyboardButton(text="🛠 Настроить бизнес", callback_data=f"tadm:open:{tenant_id}")],
                 [InlineKeyboardButton(text="🏠 В меню", callback_data="tadm:menu")],
             ]
         ),
@@ -815,5 +954,5 @@ async def parent_confirm_tenant_fallback(call: types.CallbackQuery, state: FSMCo
 @parent_router.callback_query(F.data == "parent:cancel_tenant")
 async def parent_cancel_tenant_fallback(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await safe_edit_message(call, "❌ Создание тенанта отменено.", build_parent_menu())
+    await safe_edit_message(call, "❌ Создание бизнеса отменено.", build_parent_menu())
     await safe_answer(call)

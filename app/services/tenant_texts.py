@@ -4,7 +4,7 @@ from typing import Any
 DEFAULT_TEXTS = {
     "welcome": "Добро пожаловать в {name}!",
     "services_prompt": "Выберите услугу:",
-    "phone_prompt": "Отправьте ваш номер телефона для подтверждения:",
+    "phone_prompt": "Отправьте ваш номер телефона кнопкой ниже или напишите его сообщением:",
     "confirmation_title": "✅ Вы успешно записаны!",
     "notify_title": "🔔 Новая запись!",
 }

@@ -8,6 +8,12 @@ class Settings(BaseSettings):
     PARENT_BOT_TOKEN: str = ""
     ADMIN_PASSWORD: str = ""
     PADDLE_WEBHOOK_SECRET_KEY: str = "paddle_secret_here"
+    PADDLE_PUBLIC_KEY: str = ""
+    PADDLE_PRICE_ID: str = ""
+    CRON_SECRET: str = ""
+    SUPPORT_CONTACT: str = ""
+    LEGAL_SELLER_NAME: str = ""
+    LEGAL_SELLER_DETAILS: str = ""
     SECRET_KEY: str = "super_secret_jwt_key_change_me"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440

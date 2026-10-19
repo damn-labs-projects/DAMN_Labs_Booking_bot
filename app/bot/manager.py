@@ -11,6 +11,7 @@ from app.db.mongodb import db
 from app.bot.storage import MongoStorage
 from app.bot.handlers.booking import booking_router
 from app.bot.handlers.parent import parent_router
+from app.bot.handlers.owner import owner_router
 from app.bot.handlers.tenant_admin import tenant_admin_router
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class BotManager:
         if parent_router is not None:
             self.dp.include_router(parent_router)
         self.dp.include_router(tenant_admin_router)
+        self.dp.include_router(owner_router)
         self.dp.errors.register(self._on_error)
         self.bots: dict[str, Bot] = {}
 
@@ -51,6 +53,20 @@ class BotManager:
             await asyncio.sleep(max(exc.retry_after, 2))
             await bot.set_webhook(url=webhook_url)
             logger.info(f"Webhook retried for bot token: ...{token[-6:]}")
+
+        if token != settings.PARENT_BOT_TOKEN:
+            try:
+                await bot.set_my_commands(
+                    [
+                        BotCommand(command="start", description="Записаться"),
+                        BotCommand(command="my", description="Мои записи"),
+                        BotCommand(command="owner", description="Панель владельца бизнеса"),
+                        BotCommand(command="cancel", description="Отменить текущее действие"),
+                        BotCommand(command="help", description="Помощь"),
+                    ]
+                )
+            except Exception as e:
+                logger.warning("Failed to set tenant bot commands: %s", e)
 
     async def init_parent_bot(self):
         if not settings.PARENT_BOT_TOKEN:

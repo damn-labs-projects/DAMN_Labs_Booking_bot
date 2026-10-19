@@ -5,6 +5,8 @@ from app.db.mongodb import connect_to_mongo, close_mongo_connection
 from app.bot.manager import bot_manager
 from app.api.v1.tenants import router as tenants_router
 from app.api.v1.webhooks import router as webhooks_router
+from app.api.v1.cron import router as cron_router
+from app.api.v1.pages import router as pages_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -21,8 +23,8 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-@app.get("/")
-async def root():
+@app.get("/healthz")
+async def healthz():
     return {
         "status": "ok",
         "service": settings.PROJECT_NAME,
@@ -31,6 +33,8 @@ async def root():
 
 app.include_router(tenants_router, prefix="/api/v1/tenants", tags=["Tenants"])
 app.include_router(webhooks_router, prefix="/api/v1/webhooks", tags=["Webhooks"])
+app.include_router(cron_router, prefix="/api/v1/cron", tags=["Cron"])
+app.include_router(pages_router, tags=["Pages"])
 
 if __name__ == "__main__":
     import uvicorn

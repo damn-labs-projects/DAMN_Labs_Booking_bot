@@ -27,12 +27,14 @@ class ParentBotTests(unittest.TestCase):
             category="beauty",
             owner_name="Aida",
             owner_phone="+996555123456",
+            owner_telegram_id="123456789",
             bot_token="123456:ABCDEF",
         )
 
         self.assertIn("Beauty Studio", text)
         self.assertIn("beauty", text)
         self.assertIn("Aida", text)
+        self.assertIn("123456789", text)
         self.assertIn("123456:ABCDEF", text)
 
     def test_tenant_list_and_trial_billing_summary_are_generated(self):
@@ -59,6 +61,9 @@ class ParentBotTests(unittest.TestCase):
             async def clear(self):
                 pass
 
+            async def set_state(self, *args, **kwargs):
+                pass
+
         class FakeMessage:
             def __init__(self):
                 self.bot = SimpleNamespace(token="parent-token")
@@ -74,6 +79,12 @@ class ParentBotTests(unittest.TestCase):
             self.assertNotIn("Ошибка: Заведение не найдено.", message._answers[0])
         finally:
             settings.PARENT_BOT_TOKEN = old_token
+
+    def test_is_admin_denies_unknown_and_missing_user(self):
+        from app.bot.handlers import parent as parent_module
+
+        self.assertFalse(asyncio.run(parent_module.is_admin(None)))
+        self.assertFalse(asyncio.run(parent_module.is_admin(12345)))
 
     def test_parent_bot_callback_button_route_works(self):
         class FakeMessage:
@@ -99,8 +110,18 @@ class ParentBotTests(unittest.TestCase):
             async def set_state(self, *args, **kwargs):
                 pass
 
+        from app.bot.handlers import parent as parent_module
+
+        async def _allow(_user_id):
+            return True
+
         message = FakeCall()
-        asyncio.run(parent_action(message, FakeState()))
+        original = parent_module.is_admin
+        parent_module.is_admin = _allow
+        try:
+            asyncio.run(parent_action(message, FakeState()))
+        finally:
+            parent_module.is_admin = original
 
         self.assertTrue(message.message.edits)
         self.assertIn("Список бизнесов", message.message.edits[0])
