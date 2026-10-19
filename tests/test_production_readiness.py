@@ -128,6 +128,33 @@ class LegalPageTests(unittest.TestCase):
                 self.assertGreater(len(text.strip()), 300)
                 self.assertNotIn("{", text)
 
+    def test_offer_states_refund_window_and_refund_destination(self):
+        offer = legal_pages()["offer"][1]
+
+        self.assertIn("14 (четырнадцати) календарных дней", offer)
+        self.assertIn("ту же платёжную карту или", offer)
+        self.assertIn("7.4.", offer)
+
+    def test_offer_requires_bot_token_custody(self):
+        offer = legal_pages()["offer"][1]
+
+        self.assertIn("Bot Token", offer)
+        self.assertIn("BotFather", offer)
+
+    def test_offer_discloses_recurring_payments_and_cancellation(self):
+        offer = legal_pages()["offer"][1]
+
+        self.assertIn("автопродлен", offer)
+        self.assertIn("4.5.", offer)
+        self.assertIn("окончания уже оплаченного периода", offer)
+
+    def test_contacts_explain_refunds_and_cancellation(self):
+        contacts = legal_pages()["contacts"][1]
+
+        self.assertIn("Возврат средств", contacts)
+        self.assertIn("Отмена подписки", contacts)
+        self.assertIn("14 (четырнадцати)", contacts)
+
     def test_contacts_page_does_not_repeat_generic_fallback(self):
         old = settings.SUPPORT_CONTACT
         settings.SUPPORT_CONTACT = ""
