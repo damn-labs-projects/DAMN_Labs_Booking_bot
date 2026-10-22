@@ -75,6 +75,8 @@ async def telegram_webhook(bot_token: str, request: Request):
         await bot_manager.dp.feed_update(bot=bot, update=update)
     except Exception:
         logger.exception("Unhandled error while processing Telegram update for bot ...%s", bot_token[-6:])
+    finally:
+        await bot_manager.flush_state()
     return {"status": "ok"}
 
 @router.post("/paddle")

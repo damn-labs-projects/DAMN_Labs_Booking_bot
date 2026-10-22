@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 class BotManager:
     def __init__(self):
-        self.dp = Dispatcher(storage=MongoStorage())
+        self.storage = MongoStorage()
+        self.dp = Dispatcher(storage=self.storage)
         self.dp.include_router(booking_router)
         if parent_router is not None:
             self.dp.include_router(parent_router)
@@ -26,6 +27,13 @@ class BotManager:
         self.dp.include_router(owner_router)
         self.dp.errors.register(self._on_error)
         self.bots: dict[str, Bot] = {}
+
+    async def flush_state(self) -> None:
+        """Persist buffered FSM state with one MongoDB round trip."""
+        try:
+            await self.storage.flush()
+        except Exception as exc:
+            logger.warning("Failed to flush bot state: %s", exc)
 
     async def _on_error(self, event: ErrorEvent) -> None:
         logger.error(

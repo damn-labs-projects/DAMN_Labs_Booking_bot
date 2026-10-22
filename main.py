@@ -1,3 +1,4 @@
+import asyncio
 import os
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
@@ -14,13 +15,23 @@ def _is_serverless() -> bool:
     return bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 
 
+async def _flush_state_loop() -> None:
+    """Safety net: persist buffered FSM state even outside webhook requests."""
+    while True:
+        await asyncio.sleep(3)
+        await bot_manager.flush_state()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_to_mongo()
+    flush_task = asyncio.create_task(_flush_state_loop())
     if settings.INIT_WEBHOOKS_ON_STARTUP and not _is_serverless():
         await bot_manager.init_parent_bot()
         await bot_manager.init_active_tenants()
     yield
+    flush_task.cancel()
+    await bot_manager.flush_state()
     await close_mongo_connection()
 
 app = FastAPI(
