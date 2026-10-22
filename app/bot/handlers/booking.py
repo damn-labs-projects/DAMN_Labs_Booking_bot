@@ -12,6 +12,7 @@ from app.db.mongodb import db
 from app.bot.handlers.parent import parent_start
 from app.services.booking_service import BookingRejected, BookingService
 from app.services import subscription
+from app.services import service_cache
 from app.services import tenant_cache
 from app.services import service_profiles as profiles
 from app.services.tenant_texts import render
@@ -133,8 +134,7 @@ async def _show_start_menu(message: types.Message, tenant: dict, lang: str, stat
             ),
         )
 
-    services_cursor = db.db.services.find({"tenant_id": tenant["tenant_id"], "is_active": True})
-    services = await services_cursor.to_list(length=50)
+    services = await service_cache.get_active_services(tenant["tenant_id"])
 
     welcome = render(tenant, "welcome", lang=lang)
     services_prompt = render(tenant, "services_prompt", lang=lang)

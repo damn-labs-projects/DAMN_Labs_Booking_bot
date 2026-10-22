@@ -12,6 +12,7 @@ from app.config import settings
 from app.db.mongodb import db
 from app.services import subscription
 from app.services import payment_requests
+from app.services import service_cache
 from app.services import tenant_cache
 from app.services import service_profiles as profiles
 from app.services.tenant_auth import (
@@ -507,6 +508,7 @@ async def own_service_delete(call: types.CallbackQuery):
     sid = call.data.split(":", 2)[2]
     if db is not None and db.db is not None:
         await db.db.services.delete_one({"tenant_id": tenant["tenant_id"], "service_id": sid})
+        service_cache.invalidate(tenant["tenant_id"])
     await safe_answer(call, "Удалено")
     text, kb = await _services_view(tenant["tenant_id"], tenant.get("category", "other"))
     await safe_edit_message(call, text, kb)
@@ -558,6 +560,7 @@ async def _finalize_service(message: types.Message, state: FSMContext, profile):
     }
     if db is not None and db.db is not None:
         await db.db.services.insert_one(service)
+        service_cache.invalidate(data.get("tid"))
 
     lines = [
         f"✅ Добавлено: «{service['name']}»",

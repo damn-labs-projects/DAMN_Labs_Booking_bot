@@ -9,6 +9,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.db.mongodb import db
 from app.services import payment_requests
 from app.services import subscription
+from app.services import service_cache
 from app.services import tenant_cache
 from app.services import service_profiles as profiles
 from app.services.tenant_auth import hash_owner_password, owner_password_set
@@ -442,6 +443,7 @@ async def tadm_service_delete(call: types.CallbackQuery):
     tid, sid = parts[2], parts[3]
     if db is not None and db.db is not None:
         await db.db.services.delete_one({"tenant_id": tid, "service_id": sid})
+        service_cache.invalidate(tid)
     await safe_answer(call, "Удалено")
     await _show_services(call, tid)
 
@@ -568,6 +570,7 @@ async def _finalize_service(message: types.Message, state: FSMContext, profile):
     }
     if db is not None and db.db is not None:
         await db.db.services.insert_one(service)
+        service_cache.invalidate(tid)
 
     lines = [
         f"✅ Добавлено: «{service['name']}»",
