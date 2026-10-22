@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from app.config import settings
-from app.services import payment_requests, subscription
+from app.services import payment_requests, subscription, tenant_cache
 
 
 class FakeCursor:
@@ -187,11 +187,13 @@ class FakeDbPatch:
         for module in (owner, parent, tenant_admin, payment_requests):
             self._saved.append((module, "db", getattr(module, "db", None)))
             module.db = holder
+        tenant_cache.clear_cache()
         return self.fake_db
 
     def __exit__(self, exc_type, exc, tb):
         for module, name, value in reversed(self._saved):
             setattr(module, name, value)
+        tenant_cache.clear_cache()
         return False
 
 

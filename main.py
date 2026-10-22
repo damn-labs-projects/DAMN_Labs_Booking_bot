@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.config import settings
@@ -8,11 +9,17 @@ from app.api.v1.webhooks import router as webhooks_router
 from app.api.v1.cron import router as cron_router
 from app.api.v1.pages import router as pages_router
 
+
+def _is_serverless() -> bool:
+    return bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_to_mongo()
-    await bot_manager.init_parent_bot()
-    await bot_manager.init_active_tenants()
+    if settings.INIT_WEBHOOKS_ON_STARTUP and not _is_serverless():
+        await bot_manager.init_parent_bot()
+        await bot_manager.init_active_tenants()
     yield
     await close_mongo_connection()
 

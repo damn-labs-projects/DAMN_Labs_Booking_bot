@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     PADDLE_PUBLIC_KEY: str = ""
     PADDLE_PRICE_ID: str = ""
     PAYMENT_MODE: str = "manual"
+    INIT_WEBHOOKS_ON_STARTUP: bool = True
     CRON_SECRET: str = ""
     SUPPORT_CONTACT: str = ""
     LEGAL_SELLER_NAME: str = ""

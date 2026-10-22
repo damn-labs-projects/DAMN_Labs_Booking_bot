@@ -2,6 +2,7 @@ import logging
 from typing import Any, Optional
 
 from app.db.mongodb import db
+from app.services.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -291,16 +292,37 @@ def service_button(service: dict, lang: Any) -> str:
     return text[:120]
 
 
+_lang_cache = TTLCache(ttl=300.0)
+
+
+def clear_lang_cache() -> None:
+    _lang_cache.clear()
+
+
 async def get_user_lang(telegram_id: Any) -> Optional[str]:
     if telegram_id is None or db.db is None:
         return None
     try:
-        doc = await db.db.users.find_one({"_id": int(telegram_id)})
+        cache_key = int(telegram_id)
+    except (TypeError, ValueError):
+        return None
+
+    cached = _lang_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        doc = await db.db.users.find_one({"_id": cache_key})
     except Exception as exc:
         logger.warning("Failed to read user language: %s", exc)
         return None
     lang = (doc or {}).get("lang")
-    return normalize_lang(lang) if lang else None
+    if not lang:
+        _lang_cache.set(cache_key, "")
+        return None
+    code = normalize_lang(lang)
+    _lang_cache.set(cache_key, code)
+    return code
 
 
 async def set_user_lang(telegram_id: Any, lang: Any) -> str:
@@ -315,6 +337,7 @@ async def set_user_lang(telegram_id: Any, lang: Any) -> str:
             {"$set": {"lang": code}},
             upsert=True,
         )
+        _lang_cache.set(int(telegram_id), code)
     except Exception as exc:
         logger.warning("Failed to store user language: %s", exc)
     return code

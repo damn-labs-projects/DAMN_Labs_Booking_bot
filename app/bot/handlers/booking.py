@@ -12,6 +12,7 @@ from app.db.mongodb import db
 from app.bot.handlers.parent import parent_start
 from app.services.booking_service import BookingRejected, BookingService
 from app.services import subscription
+from app.services import tenant_cache
 from app.services import service_profiles as profiles
 from app.services.tenant_texts import render
 from app import i18n
@@ -38,9 +39,7 @@ class BookingSG(StatesGroup):
 
 
 async def _client_tenant(token: str):
-    if db.db is None:
-        return None
-    return await db.db.tenants.find_one({"bot_config.token": token})
+    return await tenant_cache.get_tenant_by_token(token)
 
 
 def _is_owner(tenant: dict, telegram_id) -> bool:
@@ -101,7 +100,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
 
     tenant = await _client_tenant(message.bot.token)
-    lang = await _user_lang(message)
+    stored_lang = await i18n.get_user_lang(getattr(message.from_user, "id", None))
+    lang = stored_lang or i18n.DEFAULT_LANG
 
     if not tenant:
         await message.answer(i18n.t(lang, "error.tenant_not_found"))
@@ -113,7 +113,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     await state.update_data(tenant_id=tenant["tenant_id"])
 
-    if not await i18n.get_user_lang(getattr(message.from_user, "id", None)):
+    if not stored_lang:
         await _ask_language(message, state)
         return
 

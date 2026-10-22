@@ -12,6 +12,7 @@ from app.config import settings
 from app.db.mongodb import db
 from app.services import subscription
 from app.services import payment_requests
+from app.services import tenant_cache
 from app.services import service_profiles as profiles
 from app.services.tenant_auth import (
     hash_owner_password,
@@ -81,9 +82,7 @@ class OwnerEditSG(StatesGroup):
 
 
 async def _tenant_by_token(token: str):
-    if db is None or db.db is None:
-        return None
-    return await db.db.tenants.find_one({"bot_config.token": token})
+    return await tenant_cache.get_tenant_by_token(token)
 
 
 async def _get_tenant(tenant_id: str):

@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 from app import i18n
+from app.services import tenant_cache
 from app.bot.handlers import booking
 from app.services import tenant_texts
 
@@ -294,10 +295,14 @@ class BookingLanguageFlowTests(unittest.TestCase):
         self.fake = _make_db(TENANT, [SERVICE])
         booking.db.db = self.fake
         i18n.db.db = self.fake
+        i18n.clear_lang_cache()
+        tenant_cache.clear_cache()
 
     def tearDown(self):
         booking.db.db = self.old_db
         i18n.db.db = self.old_db
+        i18n.clear_lang_cache()
+        tenant_cache.clear_cache()
 
     def test_first_start_asks_for_language(self):
         message = _FakeMessage("/start")

@@ -9,6 +9,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.db.mongodb import db
 from app.services import payment_requests
 from app.services import subscription
+from app.services import tenant_cache
 from app.services import service_profiles as profiles
 from app.services.tenant_auth import hash_owner_password, owner_password_set
 from app.services.tenant_texts import DEFAULT_TEXTS, TEXT_LABELS, get_texts
@@ -250,6 +251,7 @@ async def tadm_subscription_extend(call: types.CallbackQuery):
     if not tenant:
         await safe_answer(call, "Бизнес не найден.", show_alert=True)
         return
+    tenant_cache.invalidate_tenant(tenant)
     if new_end is None:
         await safe_answer(call, "Не удалось сохранить подписку.", show_alert=True)
         return
@@ -273,6 +275,7 @@ async def tadm_subscription_activate(call: types.CallbackQuery):
     if not tenant:
         await safe_answer(call, "Бизнес не найден.", show_alert=True)
         return
+    tenant_cache.invalidate_tenant(tenant)
     await safe_edit_message(
         call,
         "✅ Подписка активирована.\n"
@@ -292,6 +295,7 @@ async def tadm_subscription_disable(call: types.CallbackQuery):
     if not tenant:
         await safe_answer(call, "Бизнес не найден.", show_alert=True)
         return
+    tenant_cache.invalidate_tenant(tenant)
     await safe_edit_message(
         call,
         "⛔ Подписка отключена: заведения временно недоступны для записи.\n\n"
@@ -344,6 +348,7 @@ async def tadm_request_grant(call: types.CallbackQuery):
     new_end = await subscription.grant_days(tid, 30)
     await payment_requests.close_request(request_id, "Выдано 30 дней")
     tenant = await _get_tenant(tid)
+    tenant_cache.invalidate_tenant(tenant)
     text = "✅ Выдано 30 дней."
     if new_end is not None:
         text += f"\n📅 Действует до: {new_end.strftime('%d.%m.%Y')}"

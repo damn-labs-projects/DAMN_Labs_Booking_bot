@@ -31,6 +31,24 @@ def is_authorized(request: Request) -> bool:
     return False
 
 
+@router.get("/bots/register")
+async def register_bots(request: Request):
+    """Repair Telegram webhooks for the parent bot and every tenant bot.
+
+    On serverless runtimes this runs from the cron schedule instead of the
+    application startup, so the first user message is not delayed by several
+    Telegram API round trips.
+    """
+    if not is_authorized(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+    from app.bot.manager import bot_manager
+
+    await bot_manager.init_parent_bot()
+    await bot_manager.init_active_tenants()
+    return {"status": "ok", "registered": True}
+
+
 @router.get("/subscriptions/run")
 async def run_subscriptions(request: Request):
     if not is_authorized(request):
