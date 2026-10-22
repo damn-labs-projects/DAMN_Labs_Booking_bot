@@ -23,4 +23,7 @@ async def create_tenant(tenant: TenantModel):
 @router.post("/services", response_model=ServiceModel)
 async def create_service(service: ServiceModel):
     await db.db.services.insert_one(service.model_dump())
+    from app.services import service_cache
+
+    service_cache.invalidate(service.tenant_id)
     return service
