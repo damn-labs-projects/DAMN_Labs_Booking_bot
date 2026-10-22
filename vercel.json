@@ -16,6 +16,10 @@
     {
       "path": "/api/v1/cron/subscriptions/run",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/v1/cron/bots/register",
+      "schedule": "30 0 * * *"
     }
   ]
 }
