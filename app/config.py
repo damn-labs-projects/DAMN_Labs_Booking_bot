@@ -7,9 +7,10 @@ class Settings(BaseSettings):
     BASE_WEBHOOK_URL: str
     PARENT_BOT_TOKEN: str = ""
     ADMIN_PASSWORD: str = ""
-    PADDLE_WEBHOOK_SECRET_KEY: str = "paddle_secret_here"
+    PADDLE_WEBHOOK_SECRET_KEY: str = ""
     PADDLE_PUBLIC_KEY: str = ""
     PADDLE_PRICE_ID: str = ""
+    PAYMENT_MODE: str = "manual"
     CRON_SECRET: str = ""
     SUPPORT_CONTACT: str = ""
     LEGAL_SELLER_NAME: str = ""

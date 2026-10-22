@@ -1,5 +1,6 @@
 from typing import Any
 
+from app import i18n
 
 DEFAULT_TEXTS = {
     "welcome": "Добро пожаловать в {name}!",
@@ -24,8 +25,12 @@ def get_texts(tenant: dict) -> dict:
     return texts
 
 
-def render(tenant: dict, key: str, **extra: Any) -> str:
-    template = get_texts(tenant).get(key, DEFAULT_TEXTS.get(key, ""))
+def render(tenant: dict, key: str, lang: Any = None, **extra: Any) -> str:
+    custom = (tenant.get("texts") or {}).get(key)
+    if custom:
+        template = custom
+    else:
+        template = i18n.tenant_text(lang, key) or DEFAULT_TEXTS.get(key, "")
     brand = tenant.get("branding") or {}
     values = {
         "name": tenant.get("name", ""),

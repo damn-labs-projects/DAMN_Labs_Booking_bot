@@ -44,6 +44,7 @@ class ServiceModel(BaseModel):
     price: float
     currency: str = "KGS"
     duration_minutes: int = 60
+    details: dict = Field(default_factory=dict)
     is_active: bool = True
 
 class ClientInfo(BaseModel):

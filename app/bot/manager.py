@@ -60,6 +60,7 @@ class BotManager:
                     [
                         BotCommand(command="start", description="Записаться"),
                         BotCommand(command="my", description="Мои записи"),
+                        BotCommand(command="language", description="Язык интерфейса"),
                         BotCommand(command="owner", description="Панель владельца бизнеса"),
                         BotCommand(command="cancel", description="Отменить текущее действие"),
                         BotCommand(command="help", description="Помощь"),

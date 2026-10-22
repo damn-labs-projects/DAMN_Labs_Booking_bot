@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+from app.services import service_profiles as profiles
+
 try:
     from aiogram import F, Router, types
     from aiogram.exceptions import TelegramBadRequest
@@ -286,6 +288,11 @@ def build_parent_billing_summary(tenants: list[dict]) -> str:
         deadline = tenant.get("subscription", {}).get("current_period_end")
         deadline_text = deadline.strftime("%d.%m.%Y") if hasattr(deadline, "strftime") else "7 дней trial"
         lines.append(f"- {tenant.get('name', 'Без названия')}: {status} | до {deadline_text}")
+    mode = getattr(settings, "PAYMENT_MODE", "manual") if settings else "manual"
+    if mode == "paddle":
+        lines.append("\nОплата онлайн через Paddle.")
+    else:
+        lines.append("\nОнлайн-оплата выключена. Нажмите на бизнес, чтобы продлить подписку вручную.")
     return "\n".join(lines)
 
 
@@ -299,10 +306,12 @@ def build_billing_keyboard(tenants: list[dict]) -> InlineKeyboardMarkup:
         status = tenant.get("subscription", {}).get("status", "trial")
         if status in ("active", "trial"):
             label = "💳" if status == "trial" else "✅"
-            rows.append([InlineKeyboardButton(
-                text=f"{label} {name}",
-                callback_data=f"parent:pay:{tenant_id}",
-            )])
+        else:
+            label = "⛔"
+        rows.append([InlineKeyboardButton(
+            text=f"{label} {name}",
+            callback_data=f"parent:pay:{tenant_id}",
+        )])
     rows.append([InlineKeyboardButton(text="🏠 В меню", callback_data="parent:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -318,6 +327,7 @@ def build_parent_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="➕ Добавить бизнес", callback_data="parent:add_tenant"),
                 InlineKeyboardButton(text="🧪 Демо", callback_data="parent:demo"),
             ],
+            [InlineKeyboardButton(text="📨 Запросы на оплату", callback_data="tadm:reqs")],
         ]
     )
 
@@ -328,6 +338,7 @@ def build_category_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="🏥 Medical / медицина", callback_data="wiz:cat:medical")],
         [InlineKeyboardButton(text="🎓 Education / обучение", callback_data="wiz:cat:education"),
          InlineKeyboardButton(text="🚗 Auto / авто", callback_data="wiz:cat:auto")],
+        [InlineKeyboardButton(text="☕ Cafe / кафе и рестораны", callback_data="wiz:cat:cafe")],
         [InlineKeyboardButton(text="🏢 Другое", callback_data="wiz:cat:other")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="wiz:back"),
          InlineKeyboardButton(text="❌ Отмена", callback_data="wiz:cancel")],
@@ -517,6 +528,29 @@ async def parent_action(call: types.CallbackQuery, state: FSMContext):
             await safe_edit_message(call, "Не указан бизнес для оплаты.", build_parent_menu())
             await safe_answer(call)
             return
+
+        payment_mode = getattr(settings, "PAYMENT_MODE", "manual") if settings else "manual"
+        if payment_mode != "paddle":
+            from app.bot.handlers.tenant_admin import (
+                build_subscription_kb,
+                build_subscription_screen,
+            )
+
+            tenant = None
+            if db is not None and db.db is not None:
+                tenant = await db.db.tenants.find_one({"tenant_id": tenant_id})
+            if not tenant:
+                await safe_edit_message(call, "Бизнес не найден.", build_parent_menu())
+                await safe_answer(call)
+                return
+            await safe_edit_message(
+                call,
+                build_subscription_screen(tenant),
+                build_subscription_kb(tenant_id),
+            )
+            await safe_answer(call)
+            return
+
         if not payment_is_configured():
             support = settings.SUPPORT_CONTACT if settings else ""
             await safe_edit_message(
@@ -860,7 +894,7 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
     tenant_document = {
         "tenant_id": tenant_id,
         "name": data["name"],
-        "category": data["category"],
+        "category": profiles.normalize_category(data["category"]),
         "owner_info": {
             "name": data["owner_name"],
             "phone": data["owner_phone"],
@@ -933,7 +967,8 @@ async def parent_confirm_tenant(call: types.CallbackQuery, state: FSMContext):
 
     await safe_edit_message(
         call,
-        f"✅ Бизнес создан.\n\nID: {tenant_id}\nНазвание: {data['name']}\nКатегория: {data['category']}\n"
+        f"✅ Бизнес создан.\n\nID: {tenant_id}\nНазвание: {data['name']}\n"
+        f"Категория: {profiles.category_label(data['category'])}\n"
         f"Trial активен до: {trial_end.strftime('%d.%m.%Y %H:%M')}\nТариф: $5/мес{bot_link}{webhook_note}",
         InlineKeyboardMarkup(
             inline_keyboard=[

@@ -11,6 +11,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.config import settings
 from app.db.mongodb import db
 from app.services import subscription
+from app.services import payment_requests
+from app.services import service_profiles as profiles
 from app.services.tenant_auth import (
     hash_owner_password,
     owner_is_authorized,
@@ -35,6 +37,28 @@ except (ModuleNotFoundError, ImportError):  # pragma: no cover
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
+
+def _parent_bot(fallback=None):
+    """Admins live in the platform bot chat, so notifications go through it."""
+    parent_token = getattr(settings, "PARENT_BOT_TOKEN", "") if settings else ""
+    if not parent_token:
+        return fallback
+    try:
+        from app.bot.manager import bot_manager
+
+        return bot_manager.get_bot_by_token(parent_token)
+    except Exception:
+        return fallback
+
+
+def _support_contact() -> tuple[str, str | None]:
+    """Support contact text plus a direct t.me link when a username is set."""
+    contact = (getattr(settings, "SUPPORT_CONTACT", "") or "").strip() if settings else ""
+    username = ""
+    if "@" in contact:
+        username = contact.split("@", 1)[1].strip().split()[0].lstrip("@")
+    return contact, (f"https://t.me/{username}" if username else None)
+
 owner_router = Router()
 owner_router.message.filter(is_child_bot)
 owner_router.callback_query.filter(is_child_bot)
@@ -49,7 +73,7 @@ class OwnerServiceSG(StatesGroup):
     waiting_name = State()
     waiting_price = State()
     waiting_currency = State()
-    waiting_duration = State()
+    waiting_field = State()
 
 
 class OwnerEditSG(StatesGroup):
@@ -216,6 +240,55 @@ async def own_pay(call: types.CallbackQuery):
         return
 
     support = (settings.SUPPORT_CONTACT or "").strip() if settings else ""
+
+    if (getattr(settings, "PAYMENT_MODE", "manual") or "manual") != "paddle":
+        request_id = None
+        try:
+            request_id = await payment_requests.create_request(
+                tenant_id=tenant["tenant_id"],
+                tenant_name=tenant.get("name", "—"),
+                contact=str(call.from_user.id),
+                source="owner",
+            )
+        except Exception:
+            request_id = None
+
+        support, support_url = _support_contact()
+
+        try:
+            await payment_requests.notify_admins(
+                _parent_bot(call.bot),
+                "💳 Запрос на оплату подписки\n"
+                f"🏢 Бизнес: {tenant.get('name', '—')}\n"
+                f"🆔 {tenant['tenant_id']}\n"
+                f"👤 Telegram ID: {call.from_user.id}\n"
+                f"🕒 {payment_requests.utcnow().strftime('%d.%m.%Y %H:%M')}\n\n"
+                "Продлите подписку в админке: «Подписки» → нужный бизнес.",
+            )
+        except Exception:
+            pass
+
+        text = (
+            f"{_subscription_line(tenant)}\n\n"
+            "💬 Запрос на оплату отправлен администратору — он продлит подписку вручную "
+            "и напишет вам."
+        )
+        if support:
+            text += f"\n\nПоддержка: {support}"
+        if request_id:
+            text += f"\nНомер запроса: {request_id}"
+
+        rows = [[InlineKeyboardButton(text="💳 Оплатить / продлить", callback_data="own:pay")]]
+        if support_url:
+            rows.append(
+                [InlineKeyboardButton(text="💬 Написать администратору", url=support_url)]
+            )
+        rows.append([InlineKeyboardButton(text="🏠 В меню", callback_data="own:menu")])
+
+        await safe_edit_message(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+        await safe_answer(call)
+        return
+
     if not payment_is_configured():
         await safe_edit_message(
             call,
@@ -389,22 +462,21 @@ async def _notify_client_of_cancellation(bot, tenant: dict, appointment: dict) -
         )
 
 
-async def _services_view(tid: str):
+async def _services_view(tid: str, category: str = "other"):
     services = []
     if db is not None and db.db is not None:
         cursor = db.db.services.find({"tenant_id": tid}).sort("name", 1)
         services = await cursor.to_list(length=50)
 
+    profile = profiles.get_profile(category)
+
     if services:
-        lines = ["🛠 Ваши услуги:"]
+        lines = [f"🛠 {profile.list_title}:"]
         for s in services:
-            lines.append(
-                f"• {s.get('name', '—')} — {s.get('price', '—')} {s.get('currency', '')} "
-                f"({s.get('duration_minutes', 60)} мин)"
-            )
+            lines.append(f"• {profiles.describe_service_line(s)}")
         text = "\n".join(lines)
     else:
-        text = "🛠 Услуг пока нет. Добавьте первую услугу."
+        text = f"🛠 {profile.list_title}: пока пусто. Добавьте первую позицию."
 
     rows = [
         [InlineKeyboardButton(
@@ -413,7 +485,7 @@ async def _services_view(tid: str):
         )]
         for s in services
     ]
-    rows.append([InlineKeyboardButton(text="➕ Добавить услугу", callback_data="own:srvadd")])
+    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="own:srvadd")])
     rows.append([InlineKeyboardButton(text="🏠 В меню", callback_data="own:menu")])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -423,7 +495,7 @@ async def own_services(call: types.CallbackQuery):
     tenant = await _owner_guard(call)
     if not tenant:
         return
-    text, kb = await _services_view(tenant["tenant_id"])
+    text, kb = await _services_view(tenant["tenant_id"], tenant.get("category", "other"))
     await safe_edit_message(call, text, kb)
     await safe_answer(call)
 
@@ -436,9 +508,70 @@ async def own_service_delete(call: types.CallbackQuery):
     sid = call.data.split(":", 2)[2]
     if db is not None and db.db is not None:
         await db.db.services.delete_one({"tenant_id": tenant["tenant_id"], "service_id": sid})
-    await safe_answer(call, "Услуга удалена")
-    text, kb = await _services_view(tenant["tenant_id"])
+    await safe_answer(call, "Удалено")
+    text, kb = await _services_view(tenant["tenant_id"], tenant.get("category", "other"))
     await safe_edit_message(call, text, kb)
+
+
+def _step_prompt(step: dict, index: int, total: int) -> str:
+    prompt = f"Шаг {index + 1}/{total}. {step['prompt']}"
+    example = step.get("example") or ""
+    if example:
+        prompt += f" (например, {example})"
+    if not step.get("required"):
+        prompt += "\nЕсли нет — отправьте «-»."
+    return prompt
+
+
+async def _ask_service_step(message: types.Message, state: FSMContext, prefix: str = ""):
+    data = await state.get_data()
+    profile = profiles.PROFILES.get(data.get("profile_key")) or profiles.get_profile("other")
+    queue = data.get("queue") or []
+    index = data.get("index", 0)
+
+    if index >= len(queue):
+        await _finalize_service(message, state, profile)
+        return
+
+    step = queue[index]
+    total = 3 + len(queue)
+    text = _step_prompt(step, index + 3, total)
+    if prefix:
+        text = f"{prefix}\n\n{text}"
+    await state.set_state(OwnerServiceSG.waiting_field)
+    await message.answer(text)
+
+
+async def _finalize_service(message: types.Message, state: FSMContext, profile):
+    data = await state.get_data()
+    duration = int(data.get("duration_minutes") or profile.default_duration)
+    details = {k: v for k, v in (data.get("details") or {}).items() if v not in (None, "")}
+    service = {
+        "tenant_id": data.get("tid"),
+        "service_id": str(uuid.uuid4())[:8],
+        "name": data.get("name", "Услуга"),
+        "description": "",
+        "price": data.get("price", 0),
+        "currency": data.get("currency", "KGS"),
+        "duration_minutes": duration,
+        "details": details,
+        "is_active": True,
+    }
+    if db is not None and db.db is not None:
+        await db.db.services.insert_one(service)
+
+    lines = [
+        f"✅ Добавлено: «{service['name']}»",
+        f"💰 {profiles.format_price(service['price'])} {service['currency']} · ⏱ {duration} мин",
+    ]
+    for key, value in details.items():
+        lines.append(f"• {profiles.field_label(profile, key)}: {value}")
+
+    tid = data.get("tid")
+    await state.clear()
+    await message.answer("\n".join(lines))
+    text, kb = await _services_view(tid, profile.key)
+    await message.answer(text, reply_markup=kb)
 
 
 @owner_router.callback_query(F.data == "own:srvadd")
@@ -447,21 +580,42 @@ async def own_service_add(call: types.CallbackQuery, state: FSMContext):
     if not tenant:
         return
     await state.clear()
+    profile = profiles.get_profile(tenant.get("category", "other"))
+    queue = profiles.build_field_queue(profile)
     await state.set_state(OwnerServiceSG.waiting_name)
-    await state.update_data(tid=tenant["tenant_id"])
-    await safe_edit_message(call, "➕ Новая услуга.\nШаг 1/4. Введите название услуги:", _back_kb())
+    await state.update_data(
+        tid=tenant["tenant_id"],
+        profile_key=profile.key,
+        queue=queue,
+        index=0,
+        details={},
+    )
+    total = 3 + len(queue)
+    await safe_edit_message(
+        call,
+        f"➕ {profile.add_title} для «{profile.title}».\n\n"
+        f"Шаг 1/{total}. {profile.name_label} "
+        f"(например, {profile.name_example}):",
+        _back_kb(),
+    )
     await safe_answer(call)
 
 
 @owner_router.message(OwnerServiceSG.waiting_name)
 async def own_service_name(message: types.Message, state: FSMContext):
     name = (message.text or "").strip()
+    data = await state.get_data()
+    profile = profiles.get_profile(data.get("profile_key", "other"))
     if not name:
-        await message.answer("Название не может быть пустым. Введите название услуги:")
+        await message.answer(f"{profile.name_label} не может быть пустым. Введите заново:")
+        return
+    if len(name) > 80:
+        await message.answer("Слишком длинно — до 80 символов:")
         return
     await state.update_data(name=name)
+    total = 3 + len(data.get("queue") or [])
     await state.set_state(OwnerServiceSG.waiting_price)
-    await message.answer("Шаг 2/4. Введите цену (например, 1500):")
+    await message.answer(f"Шаг 2/{total}. Введите цену (например, 1500):")
 
 
 @owner_router.message(OwnerServiceSG.waiting_price)
@@ -475,48 +629,51 @@ async def own_service_price(message: types.Message, state: FSMContext):
         await message.answer("Введите цену числом, например 1500 или 1500.50:")
         return
     await state.update_data(price=price)
+    data = await state.get_data()
+    total = 3 + len(data.get("queue") or [])
     await state.set_state(OwnerServiceSG.waiting_currency)
     rows = [[InlineKeyboardButton(text=c, callback_data=f"own:srvcur:{c}")] for c in CURRENCIES]
-    await message.answer("Шаг 3/4. Выберите валюту:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await message.answer(
+        f"Шаг 3/{total}. Выберите валюту:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 @owner_router.callback_query(OwnerServiceSG.waiting_currency, F.data.startswith("own:srvcur:"))
 async def own_service_currency(call: types.CallbackQuery, state: FSMContext):
     currency = call.data.split(":", 2)[2]
     await state.update_data(currency=currency)
-    await state.set_state(OwnerServiceSG.waiting_duration)
-    await safe_edit_message(call, f"Валюта: {currency}\nШаг 4/4. Введите длительность в минутах (например, 60):")
+    await safe_edit_message(call, f"Валюта: {currency}")
     await safe_answer(call)
+    await _ask_service_step(call.message, state)
 
 
-@owner_router.message(OwnerServiceSG.waiting_duration)
-async def own_service_duration(message: types.Message, state: FSMContext):
-    raw = (message.text or "").strip()
-    if not raw.isdigit() or not (0 < int(raw) <= 480):
-        await message.answer("Введите длительность в минутах числом от 1 до 480:")
-        return
-    duration = int(raw)
+@owner_router.message(OwnerServiceSG.waiting_field)
+async def own_service_field(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    tid = data.get("tid")
-    service = {
-        "tenant_id": tid,
-        "service_id": str(uuid.uuid4())[:8],
-        "name": data.get("name", "Услуга"),
-        "description": "",
-        "price": data.get("price", 0),
-        "currency": data.get("currency", "KGS"),
-        "duration_minutes": duration,
-        "is_active": True,
-    }
-    if db is not None and db.db is not None:
-        await db.db.services.insert_one(service)
-    await state.clear()
-    await message.answer(
-        f"✅ Услуга «{service['name']}» добавлена.\n\n"
-        f"Цена: {service['price']} {service['currency']}, {service['duration_minutes']} мин."
-    )
-    text, kb = await _services_view(tid)
-    await message.answer(text, reply_markup=kb)
+    queue = data.get("queue") or []
+    index = data.get("index", 0)
+    if index >= len(queue):
+        profile = profiles.get_profile(data.get("profile_key", "other"))
+        await _finalize_service(message, state, profile)
+        return
+
+    step = queue[index]
+    ok, value = profiles.parse_field_value(step, message.text or "")
+    if not ok:
+        await message.answer(value)
+        return
+
+    if step["key"] == "duration_minutes":
+        await state.update_data(duration_minutes=value)
+    else:
+        details = dict(data.get("details") or {})
+        if value is not None:
+            details[step["key"]] = value
+        await state.update_data(details=details)
+
+    await state.update_data(index=index + 1)
+    await _ask_service_step(message, state)
 
 
 @owner_router.callback_query(F.data == "own:txt")

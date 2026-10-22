@@ -87,6 +87,19 @@ async def landing_page():
 async def pay_page(request: Request, tenant_id: str = ""):
     tenant_id = (tenant_id or "").strip()[:128]
 
+    if (settings.PAYMENT_MODE or "manual") != "paddle":
+        contact = settings.SUPPORT_CONTACT or "Контакты в разделе «Контакты»"
+        business = f"<p class=\"muted\">Бизнес: {html.escape(tenant_id)}</p>" if tenant_id else ""
+        return _shell(
+            "Оплата",
+            "<div class=\"card\"><h1>Оплата онлайн временно выключена</h1>"
+            "<p>Подписка продлевается вручную: напишите нам, и мы включим "
+            "ваш доступ. Доступ уже можно продлить из панели администратора.</p>"
+            f"<p class=\"muted\">{html.escape(contact)}</p>"
+            f"{business}"
+            "</div>",
+        )
+
     if not payment_is_configured():
         return _shell(
             "Оплата",
@@ -135,23 +148,41 @@ async def pay_page(request: Request, tenant_id: str = ""):
         "  showErr('Оплата не настроена. Напишите в поддержку.');"
         "  document.getElementById('payBtn').disabled = true;"
         "} else {"
+        "  function describeError(e) {"
+        "    if (!e) { return 'неизвестная ошибка'; }"
+        "    if (typeof e === 'string') { return e; }"
+        "    var detail = e.detail || (e.error && (e.error.detail || e.error.message));"
+        "    if (detail) { return detail; }"
+        "    try { return JSON.stringify(e); } catch (err) { return String(e); }"
+        "  }"
         "  if (PAY_CONFIG.sandbox) { Paddle.Environment.set('sandbox'); }"
         "  Paddle.Initialize({"
         "    token: PAY_CONFIG.token,"
         "    eventCallback: function (event) {"
-        "      if (event && event.name === 'checkout.completed') {"
-        "        ok();"
+        "      console.log('paddle event', event);"
+        "      if (!event) { return; }"
+        "      if (event.name === 'checkout.completed') { ok(); }"
+        "      if (event.name === 'checkout.error') {"
+        "        showErr('Paddle: ' + describeError(event.data || event));"
         "      }"
         "    }"
         "  });"
         "  document.getElementById('payBtn').addEventListener('click', function(){"
-        "    try {"
+        "    showErr('Проверяем настройки оплаты…');"
+        "    Paddle.PricePreview({"
+        "      items: [{ priceId: PAY_CONFIG.priceId, quantity: 1 }]"
+        "    }).then(function(){"
+        "      errEl.style.display = 'none';"
         "      Paddle.Checkout.open({"
         "        items: [{ priceId: PAY_CONFIG.priceId, quantity: 1 }],"
         "        customData: { tenant_id: PAY_CONFIG.tenantId },"
         "        settings: { displayMode: 'overlay' }"
         "      });"
-        "    } catch (e) { showErr('Не удалось открыть оплату: ' + e.message); }"
+        "    }).catch(function(e){"
+        "      console.error('paddle preview failed', e);"
+        "      showErr('Paddle не принимает оплату: ' + describeError(e)"
+        "        + ' (код: ' + ((e && e.error && e.error.code) || 'нет') + ')');"
+        "    });"
         "  });"
         "}"
         "</script>"

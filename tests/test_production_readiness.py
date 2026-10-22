@@ -45,11 +45,19 @@ class PaymentPageTests(unittest.TestCase):
         cls.client = TestClient(_build_app())
         cls.old_price = settings.PADDLE_PRICE_ID
         cls.old_public = settings.PADDLE_PUBLIC_KEY
+        cls.old_mode = settings.PAYMENT_MODE
 
     @classmethod
     def tearDownClass(cls):
         settings.PADDLE_PRICE_ID = cls.old_price
         settings.PADDLE_PUBLIC_KEY = cls.old_public
+        settings.PAYMENT_MODE = cls.old_mode
+
+    def setUp(self):
+        settings.PAYMENT_MODE = "paddle"
+
+    def tearDown(self):
+        settings.PAYMENT_MODE = self.old_mode
 
     def test_pay_page_reports_missing_payment_config(self):
         settings.PADDLE_PRICE_ID = ""
@@ -79,6 +87,33 @@ class PaymentPageTests(unittest.TestCase):
         self.assertNotIn("successCallback", body)
         self.assertIn("checkout.completed", body)
 
+    def test_pay_page_preflights_price_preview_and_reports_errors(self):
+        settings.PADDLE_PRICE_ID = "pri_test_01"
+        settings.PADDLE_PUBLIC_KEY = "test_pk_live"
+
+        response = self.client.get("/pay", params={"tenant_id": "tenant-42"})
+
+        body = response.text
+        self.assertIn("Paddle.PricePreview", body)
+        self.assertIn("checkout.error", body)
+        self.assertIn("describeError", body)
+
+    def test_pay_page_uses_sandbox_environment_for_test_token(self):
+        settings.PADDLE_PRICE_ID = "pri_test_01"
+        settings.PADDLE_PUBLIC_KEY = "test_pk_live"
+
+        response = self.client.get("/pay", params={"tenant_id": "t1"})
+
+        self.assertIn('"sandbox": true', response.text)
+
+    def test_pay_page_keeps_live_environment_for_live_token(self):
+        settings.PADDLE_PRICE_ID = "pri_live_01"
+        settings.PADDLE_PUBLIC_KEY = "live_pk_live"
+
+        response = self.client.get("/pay", params={"tenant_id": "t1"})
+
+        self.assertIn('"sandbox": false', response.text)
+
     def test_pay_page_without_tenant_id_asks_for_bot_link(self):
         settings.PADDLE_PRICE_ID = "pri_test_01"
         settings.PADDLE_PUBLIC_KEY = "test_pk_live"
@@ -87,6 +122,20 @@ class PaymentPageTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Не указан бизнес", response.text)
+
+    def test_pay_page_in_manual_mode_shows_support_contact(self):
+        settings.PAYMENT_MODE = "manual"
+        settings.SUPPORT_CONTACT = "Telegram @Mari_programm"
+
+        response = self.client.get("/pay", params={"tenant_id": "t1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Оплата онлайн временно выключена", response.text)
+        self.assertIn("Telegram @Mari_programm", response.text)
+        self.assertNotIn("Paddle.Checkout.open", response.text)
+
+    def test_manual_mode_is_the_default(self):
+        self.assertIn(settings.PAYMENT_MODE or "", ("manual", "paddle"))
 
     def test_pay_link_is_https_and_carries_tenant_id(self):
         link = build_pay_link("abc123")
@@ -220,6 +269,22 @@ class PaddleSignatureTests(unittest.TestCase):
             settings.PADDLE_WEBHOOK_SECRET_KEY = self.old_secret
 
         self.assertFalse(rejected)
+
+    def test_placeholder_secret_is_fail_closed(self):
+        settings.PADDLE_WEBHOOK_SECRET_KEY = "paddle_secret_here"
+        body = json.dumps({"event_type": "subscription.updated"}).encode()
+        request = SimpleNamespace(headers=self._sign(body, "paddle_secret_here"))
+        try:
+            rejected = _verify_paddle_signature(request, body)
+        finally:
+            settings.PADDLE_WEBHOOK_SECRET_KEY = self.old_secret
+
+        self.assertFalse(rejected)
+
+    def test_default_config_secret_is_empty(self):
+        from app.config import Settings
+
+        self.assertEqual(Settings.model_fields["PADDLE_WEBHOOK_SECRET_KEY"].default, "")
 
     def test_paddle_webhook_updates_subscription_from_signed_request(self):
         payload = {

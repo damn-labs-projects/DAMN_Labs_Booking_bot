@@ -32,8 +32,8 @@ def _verify_paddle_signature(request: Request, body: bytes) -> bool:
                 h1 = p.split("=", 1)[1]
         if not ts or not h1:
             return False
-        secret = settings.PADDLE_WEBHOOK_SECRET_KEY or ""
-        if not secret:
+        secret = (settings.PADDLE_WEBHOOK_SECRET_KEY or "").strip()
+        if not secret or secret == "paddle_secret_here":
             logger.error(
                 "PADDLE_WEBHOOK_SECRET_KEY is not set; rejecting webhook"
             )
