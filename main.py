@@ -46,7 +46,8 @@ async def healthz():
     return {
         "status": "ok",
         "service": settings.PROJECT_NAME,
-        "message": "DAMN Booking Bot is running"
+        "message": "DAMN Booking Bot is running",
+        "commit": os.getenv("VERCEL_GIT_COMMIT_SHA", ""),
     }
 
 app.include_router(tenants_router, prefix="/api/v1/tenants", tags=["Tenants"])
